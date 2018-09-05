@@ -1,5 +1,11 @@
+struct petls {
+	int src, dest;
+};
+
+// socks.c
 void *do_socks(void *sockpair);
 
+// common.c
 int retrieve_sock_info(
 		bool peer,
 		int fd,

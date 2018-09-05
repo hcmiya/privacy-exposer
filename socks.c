@@ -21,32 +21,34 @@
 #include "privacy-exposer.h"
 #include "global.h"
 
-static int const timeout_short = 3000;
+static int const timeout_greet = 3000;
+static int const timeout_short = 1000;
 
-static void exit_shutdown(int onerror) {
-	// onerror
+static void fail(int type) {
+	// type
 	// -1 ブツ切り
 	// 0 認証情報取得中
 	// >0 その値
-	int *sockpair = pthread_getspecific(sock_cleaner);
-	int src = sockpair[0];
+	struct petls *tls = pthread_getspecific(sock_cleaner);
+	int src = tls->src;
 	char buf[] = "\x5\xff\x0\x3\x07-error-\x0\x0";
-	switch(onerror) {
+	switch(type) {
 	case -1:
 		break;
 	case 0:
 		send(src, buf, 2, MSG_NOSIGNAL);
 		break;
 	default:
-		buf[1] = onerror;
+		buf[1] = type;
 		send(src, buf, 14, MSG_NOSIGNAL);
 		break;
 	}
 	pthread_exit(NULL);
 }
 
-static void read_data(int fd, void *buf_, size_t left, int timeout, bool athead) {
+static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet) {
 	uint8_t *buf = buf_;
+	char const * const errorat = atgreet ? "greet" : "request";
 	struct pollfd po = {
 		.fd = fd,
 		.events = POLLIN,
@@ -54,47 +56,47 @@ static void read_data(int fd, void *buf_, size_t left, int timeout, bool athead)
 	while (left) {
 		int poll_ret = poll(&po, 1, timeout);
 		if (poll_ret == 0) {
-			pelog(LOG_NOTICE, "timed out on recv");
-			exit_shutdown(athead ? -1 : 3);
+			pelog(LOG_NOTICE, "%s: recv timed out", errorat);
+			fail(atgreet ? -1 : 3);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog(LOG_NOTICE, "error on recv (by poll)");
-			exit_shutdown(athead ? -1 : 5);
+			pelog(LOG_NOTICE, "%s: recv error (by poll)", errorat);
+			fail(atgreet ? -1 : 5);
 		}
 		ssize_t readlen = recv(fd, buf, left, 0);
 		if (readlen < 0) {
-			pelog(LOG_NOTICE, "error on recv: %s", strerror(errno));
-			exit_shutdown(athead ? -1 : 5);
+			pelog(LOG_NOTICE, "%s: recv error: %s", errorat, strerror(errno));
+			fail(atgreet ? -1 : 5);
 		}
 		if (readlen == 0) { //EOF
-			pelog(LOG_NOTICE, "unexpected eof");
-			exit_shutdown(athead ? -1 : 5);
+			pelog(LOG_NOTICE, "%s: unexpected eof", errorat);
+			fail(atgreet ? -1 : 5);
 		}
 		left -= readlen;
 		buf += readlen;
 	}
 }
 
-static void write_data(int fd, void const *buf_, size_t left) {
+static void write_header(int fd, void const *buf_, size_t left) {
 	uint8_t const *buf = buf_;
 	struct pollfd po = {
 		.fd = fd,
 		.events = POLLOUT,
 	};
 	while (left) {
-		int poll_ret = poll(&po, 1, 2000);
+		int poll_ret = poll(&po, 1, 500);
 		if (poll_ret == 0) {
-			pelog(LOG_NOTICE, "timed out on send");
-			exit_shutdown(-1);
+			pelog(LOG_NOTICE, "send timed out");
+			fail(-1);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog(LOG_NOTICE, "error on send (by poll)");
-			exit_shutdown(-1);
+			pelog(LOG_NOTICE, "send error (by poll)");
+			fail(-1);
 		}
 		ssize_t writelen = send(fd, buf, left, MSG_NOSIGNAL);
 		if (writelen < 0) {
-			pelog(LOG_NOTICE, "error on send: %s", strerror(errno));
-			exit_shutdown(-1);
+			pelog(LOG_NOTICE, "send error: %s", strerror(errno));
+			fail(-1);
 		}
 		left -= writelen;
 		buf += writelen;
@@ -117,7 +119,7 @@ static int get_upstream_socket(char const *host, char const *port) {
 	}, &res);
 	if (gai_ret) {
 		pelog(LOG_NOTICE, "upstream: name resolution failed: %s", gai_strerror(gai_ret));
-		exit_shutdown(3);
+		fail(3);
 	}
 	int error = 1;
 	for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
@@ -125,8 +127,8 @@ static int get_upstream_socket(char const *host, char const *port) {
 		if (sockfd != -1) {
 			int conerr = connect(sockfd, rp->ai_addr, rp->ai_addrlen);
 			if (!conerr) {
-				int *sockpair = pthread_getspecific(sock_cleaner);
-				sockpair[1] = sockfd;
+				struct petls *tls = pthread_getspecific(sock_cleaner);
+				tls->dest = sockfd;
 				freeaddrinfo(res);
 				return sockfd;
 			}
@@ -149,43 +151,43 @@ static int get_upstream_socket(char const *host, char const *port) {
 		close(sockfd);
 	}
 	freeaddrinfo(res);
-	exit_shutdown(error);
+	fail(error);
 	// NOTREACHED
 }
 
 static int parse_header(int src) {
 	uint8_t buf[768];
 
-	read_data(src, buf, 2, timeout_short, true);
+	read_header(src, buf, 2, timeout_greet, true);
 	// [0]: プロトコルバージョン
 	if (buf[0] != 5) {
-		exit_shutdown(-1);
+		fail(-1);
 	}
 
 	// 認証の種類
 	int authnum = buf[1];
-	read_data(src, buf, authnum, timeout_short, true);
+	read_header(src, buf, authnum, timeout_greet, true);
 	int i;
 	for (i = 0; i < authnum; i++) {
 		if (buf[i] == 0) break;
 	}
 	if (i == authnum) {
 		// 「認証無し」が含まれていなかった
-		exit_shutdown(0);
+		fail(0);
 	}
 
 	// 「認証無し」の接続を受け付けた
-	write_data(src, "\x5\x0", 2);
+	write_header(src, "\x5\x0", 2);
 
 	// 接続先要求の情報を得る
-	read_data(src, buf, 4, timeout_short, true);
+	read_header(src, buf, 4, timeout_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
 	if (buf[0] != 5 || buf[2] != 0) {
-		exit_shutdown(1);
+		fail(1);
 	}
 	if (buf[1] != 1) {
 		// connect(tcp)でない
-		exit_shutdown(7);
+		fail(7);
 	}
 
 	// 接続先ホスト
@@ -195,38 +197,38 @@ static int parse_header(int src) {
 	destbin[0] = buf[3];
 	switch (destbin[0]) {
 	case 1: // IPv4
-		read_data(src, &destbin[1], 4, timeout_short, false);
+		read_header(src, &destbin[1], 4, timeout_short, false);
 		inet_ntop(AF_INET, &destbin[1], destname, 262);
 		destlen = 5;
 		break;
 	case 3: // FQDN
-		read_data(src, &destbin[1], 1, timeout_short, false);
+		read_header(src, &destbin[1], 1, timeout_short, false);
 		if (destbin[1] == 0) {
-			exit_shutdown(1);
+			fail(1);
 		}
-		read_data(src, destname, destbin[1], timeout_short, false);
+		read_header(src, destname, destbin[1], timeout_short, false);
 		destname[destbin[1]] = '\0';
 		memcpy(&destbin[2], destname, destbin[1]);
 		destlen = destbin[1] + 2;
 		break;
 	case 4: // IPv6
-		read_data(src, &destbin[1], 16, timeout_short, false);
+		read_header(src, &destbin[1], 16, timeout_short, false);
 		inet_ntop(AF_INET6, &destbin[1], destname, 262);
 		destlen = 17;
 		break;
 	default:
-		exit_shutdown(8);
+		fail(8);
 		break;
 	}
 
 	// ポート
 	destport = destname + strlen(destname) + 1;
 	uint8_t portbin[2];
-	read_data(src, portbin, 2, timeout_short, false);
+	read_header(src, portbin, 2, timeout_short, false);
 	uint16_t port = htons(*(uint16_t*)portbin);
 	sprintf(destport, "%d", port);
 	if (port != 80 && port != 443) {
-		exit_shutdown(2);
+		fail(2);
 	}
 
 	pelog(LOG_INFO, "request: %s#%d", destname, port);
@@ -244,10 +246,10 @@ static int parse_header(int src) {
 	if (to_dark) {
 		// socks
 		pelog(LOG_DEBUG, "upstream: connect request");
-		write_data(upstream, "\x5\x1\x0", 3);
-		read_data(upstream, buf, 2, timeout_short, false);
+		write_header(upstream, "\x5\x1\x0", 3);
+		read_header(upstream, buf, 2, timeout_short, false);
 		if (buf[0] != 5 || buf[1] != 0) {
-			exit_shutdown(5);
+			fail(5);
 		}
 
 		pelog(LOG_DEBUG, "upstream: tell destination");
@@ -257,11 +259,11 @@ static int parse_header(int src) {
 		memcpy(p += destlen, portbin, 2);
 		p += 2;
 		size_t reqlen = p - buf;
-		write_data(upstream, req, reqlen);
+		write_header(upstream, req, reqlen);
 
-		read_data(upstream, p, 5, 20000, false);
+		read_header(upstream, p, 5, 20000, false);
 		if (p[0] != 5 || p[2] != 0) {
-			exit_shutdown(1);
+			fail(1);
 		}
 		int left;
 		switch(p[3]) {
@@ -272,14 +274,14 @@ static int parse_header(int src) {
 		case 4:
 			left = 17; break;
 		default:
-			exit_shutdown(1);
+			fail(1);
 		}
-		read_data(upstream, p + 5, left, timeout_short, false);
+		read_header(upstream, p + 5, left, timeout_short, false);
 
 		if (p[1]) {
 			req[1] = p[1];
-			write_data(src, req, reqlen);
-			exit_shutdown(-1);
+			write_header(src, req, reqlen);
+			fail(-1);
 		}
 		pelog(LOG_DEBUG, "upstream: connect succeeded");
 	}
@@ -297,7 +299,7 @@ static int parse_header(int src) {
 	buf[3] = type;
 	memcpy(&buf[4], srcaddrbin, addrlen);
 	memcpy(&buf[4 + addrlen], &(uint16_t[]){htons(srcport)}, 2);
-	write_data(src, buf, addrlen + 6);
+	write_header(src, buf, addrlen + 6);
 
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);
 
@@ -357,10 +359,10 @@ CLOSE:
 	return NULL;
 }
 
-void *do_socks(void *sockpair_) {
-	int *sockpair = sockpair_;
-	pthread_setspecific(sock_cleaner, sockpair);
-	int src = sockpair[0];
+void *do_socks(void *tls_) {
+	struct petls *tls = tls_;
+	pthread_setspecific(sock_cleaner, tls);
+	int src = tls->src;
 
 	char accept[40];
 	uint16_t port;
@@ -368,6 +370,7 @@ void *do_socks(void *sockpair_) {
 	pelog(LOG_DEBUG, "accept: %s#%d", accept, port);
 
 	int upstream = parse_header(src);
+
 	pthread_t th;
 	char const * const local = "local";
 	char const * const remote = "remote";

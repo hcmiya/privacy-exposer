@@ -114,16 +114,16 @@ static void daemonize() {
 	freopen("/dev/null", "w", stderr);
 }
 
-void clean_sock(void *sockpair_) {
-	int *sockpair = sockpair_;
-	shutdown(sockpair[0], SHUT_RDWR);
-	close(sockpair[0]);
-	if (sockpair[1] != -1) {
-		shutdown(sockpair[1], SHUT_RDWR);
-		close(sockpair[1]);
+void clean_sock(void *tls_) {
+	struct petls *tls = tls_;
+	shutdown(tls->src, SHUT_RDWR);
+	close(tls->src);
+	if (tls->dest != -1) {
+		shutdown(tls->dest, SHUT_RDWR);
+		close(tls->dest);
 	}
+	free(tls);
 	pelog(LOG_INFO, "clean");
-	free(sockpair);
 }
 
 
@@ -205,10 +205,10 @@ int main(int argc, char **argv) {
 					pelog(LOG_ERR, "error on accept");
 					continue;
 				}
-				int *sockpair = malloc(2 * sizeof(*sockpair));
-				sockpair[0] = confd;
-				sockpair[1] = -1;
-				pthread_create((pthread_t[]){0}, &pattr, do_socks, sockpair);
+				struct petls *tls = calloc(1, sizeof(*tls));
+				tls->src = confd;
+				tls->dest = -1;
+				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 			}
 			else if (poll_list[i].revents) {
 				poll_ret--;
