@@ -127,6 +127,7 @@ static int get_upstream_socket(char const *host, char const *port) {
 			if (!conerr) {
 				int *sockpair = pthread_getspecific(sock_cleaner);
 				sockpair[1] = sockfd;
+				freeaddrinfo(res);
 				return sockfd;
 			}
 			switch (errno) {
@@ -147,6 +148,7 @@ static int get_upstream_socket(char const *host, char const *port) {
 		}
 		close(sockfd);
 	}
+	freeaddrinfo(res);
 	exit_shutdown(error);
 	// NOTREACHED
 }
