@@ -228,7 +228,7 @@ static int parse_header(struct petls *tls) {
 	uint16_t port = htons(*(uint16_t*)portbin);
 	sprintf(destport, "%d", port);
 	sprintf(tls->reqhost, "%s#%s", destname, destport);
-	pelog_th(LOG_INFO, "header parsed");
+	pelog_th(LOG_DEBUG, "header parsed");
 
 	if (port != 80 && port != 443) {
 		pelog_th(LOG_INFO, "refused by rules: port = %u", port);
@@ -305,7 +305,7 @@ static int parse_header(struct petls *tls) {
 
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);
 
-	pelog_th(LOG_DEBUG, "established: %s#%d <- %s#%d", destname, port, srcname, srcport);
+	pelog_th(LOG_INFO, "established: %s#%d <- %s#%d", destname, port, srcname, srcport);
 	return upstream;
 }
 
