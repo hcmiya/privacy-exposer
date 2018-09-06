@@ -38,7 +38,7 @@ static void init(int argc, char **argv) {
 	conf_from_env(UPSTREAM_ADDR);
 	conf_from_env(UPSTREAM_PORT);
 #undef conf_from_env
-	
+
 	int c;
 	long loglevel;
 	char *endp;
@@ -60,7 +60,7 @@ static void init(int argc, char **argv) {
 			break;
 		}
 	}
-	
+
 	if (pidfile) {
 		openlog("privacy-exposer", 0, LOG_USER);
 		int const tab[] = {
@@ -89,7 +89,7 @@ static void daemonize() {
 		pelog(LOG_CRIT, "creating pidfile: %s: %s", pidfile, strerror(errno));
 		exit(1);
 	}
-	
+
 	switch (fork()) {
 	case -1:
 		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
@@ -99,7 +99,7 @@ static void daemonize() {
 	default:
 		exit(0);
 	}
-	
+
 	setsid();
 	switch (fork()) {
 	case -1:
@@ -110,7 +110,7 @@ static void daemonize() {
 	default:
 		exit(0);
 	}
-	
+
 	fprintf(pidfp, "%d\n", getpid());
 	if (fclose(pidfp)) {
 		// ディスクフルとか
@@ -134,10 +134,15 @@ void clean_sock(void *tls_) {
 	free(tls);
 }
 
+void trap(int sig) {
+	bool intr = sig == SIGINT;
+	pelog(LOG_NOTICE, intr ? "interrupted" : "terminated");
+	exit(intr);
+}
 
 int main(int argc, char **argv) {
 	init(argc, argv);
-	
+
 	struct addrinfo *res;
 	int gai_ret = getaddrinfo(BIND_ADDR, BIND_PORT, &(struct addrinfo) {
 		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
@@ -149,7 +154,7 @@ int main(int argc, char **argv) {
 		pelog(LOG_CRIT, "bind name error: %s", gai_strerror(gai_ret));
 		return 1;
 	}
-	
+
 	struct pollfd poll_list[16];
 	int bind_num = 0;
 	for (struct addrinfo *rp = res; rp && bind_num < 16; rp = rp->ai_next) {
@@ -162,7 +167,7 @@ int main(int argc, char **argv) {
 			pelog(LOG_ERR, "failed to create socket: %s: %s", addr, strerror(errno));
 			continue;
 		}
-		
+
 		int bind_ret = bind(poll_list[bind_num].fd, rp->ai_addr, rp->ai_addrlen);
 		if (bind_ret) {
 			pelog(LOG_ERR, "failed to bind: %s: %s", addr, strerror(errno));
@@ -186,18 +191,26 @@ int main(int argc, char **argv) {
 		pelog(LOG_CRIT, "sockets not created");
 		return 1;
 	}
-	
+
 	if (pidfile) {
 		daemonize();
 		pelog(LOG_NOTICE, "daemonized. %jd", (intmax_t)getpid());
 	}
-	
+
+	struct sigaction sa = {
+		.sa_handler = trap,
+	};
+	sigfillset(&sa.sa_mask);
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGQUIT, &sa, NULL);
+	sigaction(SIGINT, &sa, NULL);
+
 	pthread_attr_t pattr;
 	pthread_attr_init(&pattr);
 	pthread_attr_setdetachstate(&pattr, PTHREAD_CREATE_DETACHED);
 
 	pthread_key_create(&sock_cleaner, clean_sock);
-	
+
 	int thread_id = 1;
 	for (int live = bind_num; live;) {
 		int poll_ret = poll(poll_list, bind_num, -1);
@@ -205,7 +218,7 @@ int main(int argc, char **argv) {
 			pelog(LOG_CRIT, "poll(): %s", strerror(errno));
 			return 1;
 		}
-		
+
 		for (int i = 0; i < bind_num && poll_ret; i++) {
 			if (poll_list[i].revents & POLLIN) {
 				poll_ret--;
