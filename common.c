@@ -47,13 +47,47 @@ static int level = LOG_DEBUG;
 void pelog_set_level(int pri) {
 	level = pri;
 }
+
 void pelog_not_syslog(int priority, char const *fmt, ...) {
 	if (priority > level) return;
-	printf("%jd: ", (intmax_t)pthread_self());
 
 	va_list ap;
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
 	putchar('\n');
+}
+
+void pelog_not_syslog_th(int priority, char const *fmt, ...) {
+	if (priority > level) return;
+
+	struct petls *tls = pthread_getspecific(sock_cleaner);
+	printf("%s: ", tls->id);
+
+	va_list ap;
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+	putchar('\n');
+}
+
+void vpelog_not_syslog(int priority, char const *fmt, va_list ap) {
+	if (priority > level) return;
+	va_list copyap;
+	va_copy(copyap, ap);
+	vprintf(fmt, copyap);
+	va_end(copyap);
+	putchar('\n');
+}
+
+void pelog_syslog_th(int priority, char const *fmt, ...) {
+	struct petls *tls = pthread_getspecific(sock_cleaner);
+
+	char fmt_with_id[256];
+	sprintf(fmt_with_id, "%s: %s", tls->id, fmt);
+
+	va_list ap;
+	va_start(ap, fmt);
+	vsyslog(priority, fmt_with_id, ap);
+	va_end(ap);
 }

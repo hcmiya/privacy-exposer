@@ -56,20 +56,20 @@ static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgre
 	while (left) {
 		int poll_ret = poll(&po, 1, timeout);
 		if (poll_ret == 0) {
-			pelog(LOG_NOTICE, "%s: recv timed out", errorat);
+			pelog_th(LOG_NOTICE, "%s: recv timed out", errorat);
 			fail(atgreet ? -1 : 3);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog(LOG_NOTICE, "%s: recv error (by poll)", errorat);
+			pelog_th(LOG_NOTICE, "%s: recv error (by poll)", errorat);
 			fail(atgreet ? -1 : 5);
 		}
 		ssize_t readlen = recv(fd, buf, left, 0);
 		if (readlen < 0) {
-			pelog(LOG_NOTICE, "%s: recv error: %s", errorat, strerror(errno));
+			pelog_th(LOG_NOTICE, "%s: recv error: %s", errorat, strerror(errno));
 			fail(atgreet ? -1 : 5);
 		}
 		if (readlen == 0) { //EOF
-			pelog(LOG_NOTICE, "%s: unexpected eof", errorat);
+			pelog_th(LOG_NOTICE, "%s: unexpected eof", errorat);
 			fail(atgreet ? -1 : 5);
 		}
 		left -= readlen;
@@ -86,16 +86,16 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	while (left) {
 		int poll_ret = poll(&po, 1, 500);
 		if (poll_ret == 0) {
-			pelog(LOG_NOTICE, "send timed out");
+			pelog_th(LOG_NOTICE, "send timed out");
 			fail(-1);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog(LOG_NOTICE, "send error (by poll)");
+			pelog_th(LOG_NOTICE, "send error (by poll)");
 			fail(-1);
 		}
 		ssize_t writelen = send(fd, buf, left, MSG_NOSIGNAL);
 		if (writelen < 0) {
-			pelog(LOG_NOTICE, "send error: %s", strerror(errno));
+			pelog_th(LOG_NOTICE, "send error: %s", strerror(errno));
 			fail(-1);
 		}
 		left -= writelen;
@@ -118,7 +118,7 @@ static int get_upstream_socket(char const *host, char const *port) {
 		.ai_protocol = 6,
 	}, &res);
 	if (gai_ret) {
-		pelog(LOG_NOTICE, "upstream: name resolution failed: %s", gai_strerror(gai_ret));
+		pelog_th(LOG_NOTICE, "upstream: name resolution failed: %s", gai_strerror(gai_ret));
 		fail(3);
 	}
 	int error = 1;
@@ -143,10 +143,10 @@ static int get_upstream_socket(char const *host, char const *port) {
 			default:
 				error = 1; break;
 			}
-			pelog(LOG_NOTICE, "upstream: connect() error: %s", strerror(errno));
+			pelog_th(LOG_NOTICE, "upstream: connect() error: %s", strerror(errno));
 		}
 		else {
-			pelog(LOG_NOTICE, "upstream: socket() error: %s", strerror(errno));
+			pelog_th(LOG_NOTICE, "upstream: socket() error: %s", strerror(errno));
 		}
 		close(sockfd);
 	}
@@ -231,7 +231,7 @@ static int parse_header(int src) {
 		fail(2);
 	}
 
-	pelog(LOG_INFO, "request: %s#%d", destname, port);
+	pelog_th(LOG_INFO, "request: %s#%d", destname, port);
 
 	// 上流に接続してソケットを得る
 	bool to_dark = end_with(destname, ".onion") || end_with(destname, ".i2p");
@@ -245,14 +245,14 @@ static int parse_header(int src) {
 
 	if (to_dark) {
 		// socks
-		pelog(LOG_DEBUG, "upstream: connect request");
+		pelog_th(LOG_DEBUG, "upstream: connect request");
 		write_header(upstream, "\x5\x1\x0", 3);
 		read_header(upstream, buf, 2, timeout_short, false);
 		if (buf[0] != 5 || buf[1] != 0) {
 			fail(5);
 		}
 
-		pelog(LOG_DEBUG, "upstream: tell destination");
+		pelog_th(LOG_DEBUG, "upstream: tell destination");
 		uint8_t *p = buf, *req = buf;
 		memcpy(p, "\x5\x1\x0", 3);
 		memcpy(p += 3, destbin, destlen);
@@ -283,7 +283,7 @@ static int parse_header(int src) {
 			write_header(src, req, reqlen);
 			fail(-1);
 		}
-		pelog(LOG_DEBUG, "upstream: connect succeeded");
+		pelog_th(LOG_DEBUG, "upstream: connect succeeded");
 	}
 
 	char srcname[64];
@@ -303,14 +303,24 @@ static int parse_header(int src) {
 
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);
 
-	pelog(LOG_DEBUG, "established: %s#%d <- %s#%d", destname, port, srcname, srcport);
+	pelog_th(LOG_DEBUG, "established: %s#%d <- %s#%d", destname, port, srcname, srcport);
 	return upstream;
 }
 
 struct portpair {
-	char const *rname, *wname;
+	char const *rname, *wname, *id;
 	int r, w;
 };
+
+void pelog_relay(int pri, char const *id, char const *fmt, ...) {
+	char idfmt[256];
+	sprintf(idfmt, "%s: %s", id, fmt);
+
+	va_list ap;
+	va_start(ap, fmt);
+	vpelog(pri, idfmt, ap);
+	va_end(ap);
+}
 
 void *do_relay(void *pp_) {
 	struct portpair *pp = pp_;
@@ -327,22 +337,22 @@ void *do_relay(void *pp_) {
 	while (1) {
 		ssize_t readlen = recv(pp->r, buf, buflen, 0);
 		if (readlen == -1) {
-			pelog(LOG_NOTICE, "recv %s: error: %s", pp->rname, strerror(errno));
+			pelog_relay(LOG_NOTICE, pp->id, "recv %s: error: %s", pp->rname, strerror(errno));
 			break;
 		} else if (readlen == 0) {
 			break;
 		}
-//		pelog(LOG_DEBUG, "recv %s: %zd", pp->rname, readlen);
+//		pelog_relay(LOG_DEBUG, pp->id, "recv %s: %zd", pp->rname, readlen);
 		recv_total += readlen;
 
 		uint8_t *p = buf;
 		while (readlen) {
 			ssize_t writelen = send(pp->w, p, readlen, MSG_NOSIGNAL);
 			if (writelen == -1) {
-				pelog(LOG_NOTICE, "send %s: send(): %s", pp->wname, strerror(errno));
+				pelog_relay(LOG_NOTICE, pp->id, "send %s: send(): %s", pp->wname, strerror(errno));
 				goto CLOSE;
 			}
-//			pelog(LOG_DEBUG, "send %s: %zd in %zd", pp->wname, writelen, readlen);
+//			pelog_relay(LOG_DEBUG, pp->id, "send %s: %zd in %zd", pp->wname, writelen, readlen);
 			readlen -= writelen;
 			p += writelen;
 			send_total += writelen;
@@ -351,10 +361,10 @@ void *do_relay(void *pp_) {
 CLOSE:
 	shutdown(pp->w, SHUT_WR);
 	shutdown(pp->r, SHUT_RD);
-	pelog(LOG_DEBUG, "total: recv %s: %zu, send %s: %zu",
+	pelog_relay(LOG_DEBUG, pp->id, "total: recv %s: %zu, send %s: %zu",
 		pp->rname, recv_total, pp->wname, send_total
 	);
-	pelog(LOG_DEBUG, "shutdown: %s -> %s", pp->rname, pp->wname);
+	pelog_relay(LOG_DEBUG, pp->id, "shutdown: %s -> %s", pp->rname, pp->wname);
 
 	return NULL;
 }
@@ -367,7 +377,7 @@ void *do_socks(void *tls_) {
 	char accept[40];
 	uint16_t port;
 	retrieve_sock_info(false, src, accept, NULL, &port);
-	pelog(LOG_DEBUG, "accept: %s#%d", accept, port);
+	pelog_th(LOG_DEBUG, "accept: %s#%d", accept, port);
 
 	int upstream = parse_header(src);
 
@@ -375,12 +385,12 @@ void *do_socks(void *tls_) {
 	char const * const local = "local";
 	char const * const remote = "remote";
 	pthread_create(&th, NULL, do_relay, &(struct portpair) {
-		.r = upstream, .rname = remote,
+		.r = upstream, .rname = remote, .id = tls->id,
 		.w = src, .wname = local,
 	});
 	do_relay(&(struct portpair) {
 		.r = src, .rname = local,
-		.w = upstream, .wname = remote,
+		.w = upstream, .wname = remote, .id = tls->id,
 	});
 	pthread_join(th, NULL);
 	return NULL;

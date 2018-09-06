@@ -16,6 +16,7 @@
 #include <stdarg.h>
 #include <syslog.h>
 #include <pthread.h>
+#include <inttypes.h>
 
 #define GLOBAL_MAIN
 #include "privacy-exposer.h"
@@ -71,10 +72,14 @@ static void init(int argc, char **argv) {
 		}
 		setlogmask(logmask);
 		pelog = syslog;
+		pelog_th = pelog_syslog_th;
+		vpelog = vsyslog;
 	}
 	else {
 		pelog_set_level((int)loglevel);
 		pelog = pelog_not_syslog;
+		pelog_th = pelog_not_syslog_th;
+		vpelog = vpelog_not_syslog;
 	}
 }
 
@@ -122,8 +127,8 @@ void clean_sock(void *tls_) {
 		shutdown(tls->dest, SHUT_RDWR);
 		close(tls->dest);
 	}
+	pelog(LOG_INFO, "%s: clean", tls->id);
 	free(tls);
-	pelog(LOG_INFO, "clean");
 }
 
 
@@ -190,6 +195,7 @@ int main(int argc, char **argv) {
 
 	pthread_key_create(&sock_cleaner, clean_sock);
 	
+	int thread_id = 1;
 	for (int live = bind_num; live;) {
 		int poll_ret = poll(poll_list, bind_num, -1);
 		if (poll_ret < 0) {
@@ -208,6 +214,7 @@ int main(int argc, char **argv) {
 				struct petls *tls = calloc(1, sizeof(*tls));
 				tls->src = confd;
 				tls->dest = -1;
+				sprintf(tls->id, "%08"PRIX32, thread_id++);
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 			}
 			else if (poll_list[i].revents) {
