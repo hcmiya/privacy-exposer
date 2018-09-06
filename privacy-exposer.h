@@ -1,5 +1,5 @@
 struct petls {
-	char id[9];
+	char reqhost[262], id[9];
 	int src, dest;
 	struct timespec btime;
 };

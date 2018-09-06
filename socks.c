@@ -56,20 +56,20 @@ static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgre
 	while (left) {
 		int poll_ret = poll(&po, 1, timeout);
 		if (poll_ret == 0) {
-			pelog_th(LOG_NOTICE, "%s: recv() timed out", errorat);
+			pelog_th(LOG_INFO, "%s: recv() timed out", errorat);
 			fail(atgreet ? -1 : 3);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog_th(LOG_NOTICE, "%s: recv() error (by poll)", errorat);
+			pelog_th(LOG_INFO, "%s: recv() error (by poll)", errorat);
 			fail(atgreet ? -1 : 5);
 		}
 		ssize_t readlen = recv(fd, buf, left, 0);
 		if (readlen < 0) {
-			pelog_th(LOG_NOTICE, "%s: recv(): %s", errorat, strerror(errno));
+			pelog_th(LOG_INFO, "%s: recv(): %s", errorat, strerror(errno));
 			fail(atgreet ? -1 : 5);
 		}
 		if (readlen == 0) { //EOF
-			pelog_th(LOG_NOTICE, "%s: unexpected eof", errorat);
+			pelog_th(LOG_INFO, "%s: unexpected eof", errorat);
 			fail(atgreet ? -1 : 5);
 		}
 		left -= readlen;
@@ -86,16 +86,16 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	while (left) {
 		int poll_ret = poll(&po, 1, 500);
 		if (poll_ret == 0) {
-			pelog_th(LOG_NOTICE, "send() timed out");
+			pelog_th(LOG_INFO, "send() timed out");
 			fail(-1);
 		}
 		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog_th(LOG_NOTICE, "send() error (by poll)");
+			pelog_th(LOG_INFO, "send() error (by poll)");
 			fail(-1);
 		}
 		ssize_t writelen = send(fd, buf, left, MSG_NOSIGNAL);
 		if (writelen < 0) {
-			pelog_th(LOG_NOTICE, "send(): %s", strerror(errno));
+			pelog_th(LOG_INFO, "send(): %s", strerror(errno));
 			fail(-1);
 		}
 		left -= writelen;
@@ -109,7 +109,7 @@ static bool end_with(char const *haystack, char const *needle) {
 	return hlen >= nlen && !strcmp(haystack + hlen - nlen, needle);
 }
 
-static int get_upstream_socket(char const *host, char const *port) {
+static int get_upstream_socket(struct petls *tls, char const *host, char const *port) {
 	struct addrinfo *res;
 	int gai_ret = getaddrinfo(host, port, &(struct addrinfo) {
 		.ai_flags = AI_NUMERICSERV,
@@ -118,7 +118,7 @@ static int get_upstream_socket(char const *host, char const *port) {
 		.ai_protocol = 6,
 	}, &res);
 	if (gai_ret) {
-		pelog_th(LOG_NOTICE, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
+		pelog_th(LOG_INFO, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
 		fail(3);
 	}
 	int error = 1;
@@ -127,7 +127,6 @@ static int get_upstream_socket(char const *host, char const *port) {
 		if (sockfd != -1) {
 			int conerr = connect(sockfd, rp->ai_addr, rp->ai_addrlen);
 			if (!conerr) {
-				struct petls *tls = pthread_getspecific(sock_cleaner);
 				tls->dest = sockfd;
 				freeaddrinfo(res);
 				return sockfd;
@@ -143,10 +142,10 @@ static int get_upstream_socket(char const *host, char const *port) {
 			default:
 				error = 1; break;
 			}
-			pelog_th(LOG_NOTICE, "upstream: connect(): %s", strerror(errno));
+			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
 		}
 		else {
-			pelog_th(LOG_NOTICE, "upstream: socket(): %s", strerror(errno));
+			pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
 		}
 		close(sockfd);
 	}
@@ -155,8 +154,9 @@ static int get_upstream_socket(char const *host, char const *port) {
 	// NOTREACHED
 }
 
-static int parse_header(int src) {
+static int parse_header(struct petls *tls) {
 	uint8_t buf[768];
+	int src = tls->src;
 
 	read_header(src, buf, 2, timeout_greet, true);
 	// [0]: プロトコルバージョン
@@ -227,20 +227,22 @@ static int parse_header(int src) {
 	read_header(src, portbin, 2, timeout_short, false);
 	uint16_t port = htons(*(uint16_t*)portbin);
 	sprintf(destport, "%d", port);
+	sprintf(tls->reqhost, "%s#%s", destname, destport);
+	pelog_th(LOG_INFO, "header parsed");
+
 	if (port != 80 && port != 443) {
+		pelog_th(LOG_INFO, "refused by rules: port = %u", port);
 		fail(2);
 	}
-
-	pelog_th(LOG_INFO, "request: %s#%d", destname, port);
 
 	// 上流に接続してソケットを得る
 	bool to_dark = end_with(destname, ".onion") || end_with(destname, ".i2p");
 	int upstream;
 	if (to_dark) {
-		upstream = get_upstream_socket(UPSTREAM_ADDR, UPSTREAM_PORT);
+		upstream = get_upstream_socket(tls, UPSTREAM_ADDR, UPSTREAM_PORT);
 	}
 	else {
-		upstream = get_upstream_socket(destname, destport);
+		upstream = get_upstream_socket(tls, destname, destport);
 	}
 
 	if (to_dark) {
@@ -315,7 +317,7 @@ struct portpair {
 
 void pelog_relay(int pri, struct petls *tls, char const *fmt, ...) {
 	char idfmt[256];
-	sprintf(idfmt, "%s: %ldms: %s", tls->id, lapse_ms(&tls->btime), fmt);
+	sprintf(idfmt, "%s %s: %ldms: %s", tls->id, tls->reqhost, lapse_ms(&tls->btime), fmt);
 
 	va_list ap;
 	va_start(ap, fmt);
@@ -338,7 +340,7 @@ void *do_relay(void *pp_) {
 	while (1) {
 		ssize_t readlen = recv(pp->r, buf, buflen, 0);
 		if (readlen == -1) {
-			pelog_relay(LOG_NOTICE, pp->tls, "recv %s: error: %s", pp->rname, strerror(errno));
+			pelog_relay(LOG_INFO, pp->tls, "recv %s: error: %s", pp->rname, strerror(errno));
 			break;
 		} else if (readlen == 0) {
 			break;
@@ -350,7 +352,7 @@ void *do_relay(void *pp_) {
 		while (readlen) {
 			ssize_t writelen = send(pp->w, p, readlen, MSG_NOSIGNAL);
 			if (writelen == -1) {
-				pelog_relay(LOG_NOTICE, pp->tls, "send %s: send(): %s", pp->wname, strerror(errno));
+				pelog_relay(LOG_INFO, pp->tls, "send %s: send(): %s", pp->wname, strerror(errno));
 				goto CLOSE;
 			}
 //			pelog_relay(LOG_DEBUG, pp->id, "send %s: %zd in %zd", pp->wname, writelen, readlen);
@@ -375,13 +377,14 @@ void *do_socks(void *tls_) {
 	pthread_setspecific(sock_cleaner, tls);
 	int src = tls->src;
 
-	char accept[40];
-	uint16_t port;
-	retrieve_sock_info(false, src, accept, NULL, &port);
-	clock_gettime(CLOCK_REALTIME, &tls->btime);
-	pelog_th(LOG_DEBUG, "accept: %s#%d", accept, port);
+	char accept_local[40], accept_remote[40];
+	uint16_t port_local, port_remote;
+	retrieve_sock_info(false, src, accept_local, NULL, &port_local);
+	retrieve_sock_info(true, src, accept_remote, NULL, &port_remote);
+	pelog(LOG_DEBUG, "%s: accept: %s#%d <- %s#%d", tls->id, accept_local, port_local, accept_remote, port_remote);
 
-	int upstream = parse_header(src);
+	clock_gettime(CLOCK_REALTIME, &tls->btime);
+	int upstream = parse_header(tls);
 
 	pthread_t th;
 	char const * const local = "local";

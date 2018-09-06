@@ -71,7 +71,7 @@ void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
 	struct petls *tls = pthread_getspecific(sock_cleaner);
-	printf("%s: %ldms: ", tls->id, lapse_ms(&tls->btime));
+	printf("%s %s: %ldms: ", tls->id, tls->reqhost, lapse_ms(&tls->btime));
 
 	va_list ap;
 	va_start(ap, fmt);
@@ -92,8 +92,8 @@ void vpelog_not_syslog(int priority, char const *fmt, va_list ap) {
 void pelog_syslog_th(int priority, char const *fmt, ...) {
 	struct petls *tls = pthread_getspecific(sock_cleaner);
 
-	char fmt_with_id[256];
-	sprintf(fmt_with_id, "%s: %ldms: %s", tls->id, lapse_ms(&tls->btime), fmt);
+	char fmt_with_id[512];
+	sprintf(fmt_with_id, "%s %s: %ldms: %s", tls->id, tls->reqhost, lapse_ms(&tls->btime), fmt);
 
 	va_list ap;
 	va_start(ap, fmt);

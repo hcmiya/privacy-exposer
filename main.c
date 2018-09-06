@@ -130,7 +130,7 @@ void clean_sock(void *tls_) {
 		shutdown(tls->dest, SHUT_RDWR);
 		close(tls->dest);
 	}
-	pelog(LOG_DEBUG, "%s: %dms: clean", tls->id, lapse_ms(&tls->btime));
+	pelog(LOG_DEBUG, "%s %s: %dms: clean", tls->id, tls->reqhost, lapse_ms(&tls->btime));
 	free(tls);
 }
 
@@ -218,6 +218,7 @@ int main(int argc, char **argv) {
 				tls->src = confd;
 				tls->dest = -1;
 				sprintf(tls->id, "%08"PRIX32, thread_id++);
+				strcpy(tls->reqhost, "(?)");
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 			}
 			else if (poll_list[i].revents) {
@@ -229,6 +230,6 @@ int main(int argc, char **argv) {
 		}
 	}
 
-	pelog(LOG_CRIT, "no listening sockets");
+	pelog(LOG_CRIT, "no listening sockets. aborted");
 	return 1;
 }
