@@ -52,6 +52,12 @@ long lapse_ms(struct timespec *from) {
 	return seclap * 1000 + nanolap / 1000000;
 }
 
+bool end_with(char const *haystack, char const *needle) {
+	size_t hlen = strlen(haystack);
+	size_t nlen = strlen(needle);
+	return hlen >= nlen && !strcmp(haystack + hlen - nlen, needle);
+}
+
 static int level = LOG_DEBUG;
 void pelog_set_level(int pri) {
 	level = pri;

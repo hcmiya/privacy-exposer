@@ -15,6 +15,7 @@ int retrieve_sock_info(
 		uint8_t addrbin[static 16],
 		uint16_t *port);
 long lapse_ms(struct timespec *from);
+bool end_with(char const *haystack, char const *needle);
 
 void pelog_not_syslog(int priority, char const *fmt, ...);
 void pelog_not_syslog_th(int priority, char const *fmt, ...);

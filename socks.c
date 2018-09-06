@@ -103,12 +103,6 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static bool end_with(char const *haystack, char const *needle) {
-	size_t hlen = strlen(haystack);
-	size_t nlen = strlen(needle);
-	return hlen >= nlen && !strcmp(haystack + hlen - nlen, needle);
-}
-
 static int get_upstream_socket(struct petls *tls, char const *host, char const *port) {
 	struct addrinfo *res;
 	int gai_ret = getaddrinfo(host, port, &(struct addrinfo) {
