@@ -86,13 +86,13 @@ static void init(int argc, char **argv) {
 static void daemonize() {
 	FILE *pidfp = fopen(pidfile, "w");
 	if (!pidfp) {
-		pelog(LOG_EMERG, "daemonize: %s", strerror(errno));
+		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
 		exit(1);
 	}
 	
 	switch (fork()) {
 	case -1:
-		pelog(LOG_EMERG, "daemonize: %s", strerror(errno));
+		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
 		exit(1);
 	case 0:
 		break;
@@ -103,7 +103,7 @@ static void daemonize() {
 	setsid();
 	switch (fork()) {
 	case -1:
-		pelog(LOG_EMERG, "daemonize: %s", strerror(errno));
+		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
 		exit(1);
 	case 0:
 		break;
@@ -143,7 +143,7 @@ int main(int argc, char **argv) {
 		.ai_protocol = 6,
 	}, &res);
 	if (gai_ret) {
-		pelog(LOG_EMERG, "bind name error: %s", gai_strerror(gai_ret));
+		pelog(LOG_CRIT, "bind name error: %s", gai_strerror(gai_ret));
 		return 1;
 	}
 	
@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
 	}
 	freeaddrinfo(res);
 	if (!bind_num) {
-		pelog(LOG_EMERG, "sockets not created");
+		pelog(LOG_CRIT, "sockets not created");
 		return 1;
 	}
 	
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
 	for (int live = bind_num; live;) {
 		int poll_ret = poll(poll_list, bind_num, -1);
 		if (poll_ret < 0) {
-			pelog(LOG_EMERG, "error on accept poll");
+			pelog(LOG_CRIT, "error on accept poll");
 			return 1;
 		}
 		
