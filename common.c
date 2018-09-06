@@ -43,6 +43,15 @@ int retrieve_sock_info(
 	return type;
 }
 
+long lapse_ms(struct timespec *from) {
+	struct timespec lap;
+	clock_gettime(CLOCK_REALTIME, &lap);
+	int seclap = lap.tv_sec - from->tv_sec;
+	long nanolap = lap.tv_nsec - from->tv_nsec;
+	if (nanolap < 0) nanolap += 1000000000;
+	return seclap * 1000 + nanolap / 1000000;
+}
+
 static int level = LOG_DEBUG;
 void pelog_set_level(int pri) {
 	level = pri;
@@ -62,7 +71,7 @@ void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
 	struct petls *tls = pthread_getspecific(sock_cleaner);
-	printf("%s: ", tls->id);
+	printf("%s: %ldms: ", tls->id, lapse_ms(&tls->btime));
 
 	va_list ap;
 	va_start(ap, fmt);
@@ -84,7 +93,7 @@ void pelog_syslog_th(int priority, char const *fmt, ...) {
 	struct petls *tls = pthread_getspecific(sock_cleaner);
 
 	char fmt_with_id[256];
-	sprintf(fmt_with_id, "%s: %s", tls->id, fmt);
+	sprintf(fmt_with_id, "%s: %ldms: %s", tls->id, lapse_ms(&tls->btime), fmt);
 
 	va_list ap;
 	va_start(ap, fmt);

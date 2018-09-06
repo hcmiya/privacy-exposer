@@ -86,7 +86,7 @@ static void init(int argc, char **argv) {
 static void daemonize() {
 	FILE *pidfp = fopen(pidfile, "w");
 	if (!pidfp) {
-		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
+		pelog(LOG_CRIT, "creating pidfile: %s: %s", pidfile, strerror(errno));
 		exit(1);
 	}
 	
@@ -112,7 +112,10 @@ static void daemonize() {
 	}
 	
 	fprintf(pidfp, "%d\n", getpid());
-	fclose(pidfp);
+	if (fclose(pidfp)) {
+		// ディスクフルとか
+		pelog(LOG_CRIT, "writing pid: %s: %s", pidfile, strerror(errno));
+	}
 	chdir("/");
 	freopen("/dev/null", "r", stdin);
 	freopen("/dev/null", "w", stdout);
@@ -127,7 +130,7 @@ void clean_sock(void *tls_) {
 		shutdown(tls->dest, SHUT_RDWR);
 		close(tls->dest);
 	}
-	pelog(LOG_INFO, "%s: clean", tls->id);
+	pelog(LOG_DEBUG, "%s: %dms: clean", tls->id, lapse_ms(&tls->btime));
 	free(tls);
 }
 
@@ -153,7 +156,7 @@ int main(int argc, char **argv) {
 		char addr[64];
 		char txtport[6];
 		getnameinfo(rp->ai_addr, rp->ai_addrlen, addr, 58, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
-		strcat(strcat(addr, "#"), txtport);
+		sprintf(addr + strlen(addr), "#%s", txtport);
 		poll_list[bind_num].fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 		if (poll_list[bind_num].fd < 0) {
 			pelog(LOG_ERR, "failed to create socket: %s: %s", addr, strerror(errno));
@@ -186,7 +189,7 @@ int main(int argc, char **argv) {
 	
 	if (pidfile) {
 		daemonize();
-		pelog(LOG_NOTICE, "daemonized");
+		pelog(LOG_NOTICE, "daemonized. %jd", (intmax_t)getpid());
 	}
 	
 	pthread_attr_t pattr;
@@ -199,7 +202,7 @@ int main(int argc, char **argv) {
 	for (int live = bind_num; live;) {
 		int poll_ret = poll(poll_list, bind_num, -1);
 		if (poll_ret < 0) {
-			pelog(LOG_CRIT, "error on accept poll");
+			pelog(LOG_CRIT, "poll(): %s", strerror(errno));
 			return 1;
 		}
 		
@@ -208,7 +211,7 @@ int main(int argc, char **argv) {
 				poll_ret--;
 				int confd = accept(poll_list[i].fd, NULL, NULL);
 				if (confd < 0) {
-					pelog(LOG_ERR, "error on accept");
+					pelog(LOG_ERR, "accept(): %s", strerror(errno));
 					continue;
 				}
 				struct petls *tls = calloc(1, sizeof(*tls));
@@ -218,12 +221,14 @@ int main(int argc, char **argv) {
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 			}
 			else if (poll_list[i].revents) {
+				pelog(LOG_ERR, "accept() (from poll())");
 				poll_ret--;
 				poll_list[i].fd = ~poll_list[i].fd;
 				live--;
 			}
 		}
 	}
-	
+
+	pelog(LOG_CRIT, "no listening sockets");
 	return 1;
 }
