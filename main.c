@@ -71,13 +71,31 @@ static void daemonize() {
 		exit(1);
 	}
 
+	int pp[2];
+	pipe(pp);
+	pid_t daemonpid;
 	switch (fork()) {
 	case -1:
 		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
 		exit(1);
 	case 0:
+		close(pp[0]);
 		break;
 	default:
+		close(pp[1]);
+		ssize_t readlen = read(pp[0], &daemonpid, sizeof(daemonpid));
+		if (readlen <= 0) {
+			exit(1);
+		}
+		close(pp[0]);
+		fprintf(pidfp, "%jd\n", (intmax_t)daemonpid);
+		if (fclose(pidfp)) {
+			// ディスクフルとか
+			kill(daemonpid, SIGKILL);
+			pelog(LOG_CRIT, "writing pid: %s: %s", pidfile, strerror(errno));
+			exit(1);
+		}
+		fprintf(stderr, "privacy-exposer: daemonized. %jd\n", (intmax_t)daemonpid);
 		_exit(0);
 	}
 
@@ -85,18 +103,18 @@ static void daemonize() {
 	switch (fork()) {
 	case -1:
 		pelog(LOG_CRIT, "daemonize: %s", strerror(errno));
-		exit(1);
+		close(pp[1]);
+		_exit(1);
 	case 0:
 		break;
 	default:
 		_exit(0);
 	}
 
-	fprintf(pidfp, "%d\n", getpid());
-	if (fclose(pidfp)) {
-		// ディスクフルとか
-		pelog(LOG_CRIT, "writing pid: %s: %s", pidfile, strerror(errno));
-	}
+	daemonpid = getpid();
+	write(pp[1], &daemonpid, sizeof(daemonpid));
+	close(pp[1]);
+
 	chdir("/");
 	freopen("/dev/null", "r", stdin);
 	freopen("/dev/null", "w", stdout);
@@ -175,7 +193,6 @@ int main(int argc, char **argv) {
 
 	if (pidfile) {
 		daemonize();
-		pelog(LOG_NOTICE, "daemonized. %jd", (intmax_t)getpid());
 	}
 
 	struct sigaction sa = {
