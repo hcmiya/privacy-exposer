@@ -2,9 +2,10 @@
 
 privacy-exposerはTor/I2Pを別のSOCKSプロクシへ、それ以外は踏み台としてのみ振る舞う単純なSOCKSプロクシです。
 
-## 動作要件
+## コンパイル・動作要件
 
 * C99
+* POSIX.1-2008
 * `vsyslog()`が公開されること。NetBSDでは`CFLAGS`に`-D_NETBSD_SOURCE`の追加が必要。
 
 ## 使い方
