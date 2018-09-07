@@ -78,7 +78,7 @@ static void daemonize() {
 	case 0:
 		break;
 	default:
-		exit(0);
+		_exit(0);
 	}
 
 	setsid();
@@ -89,7 +89,7 @@ static void daemonize() {
 	case 0:
 		break;
 	default:
-		exit(0);
+		_exit(0);
 	}
 
 	fprintf(pidfp, "%d\n", getpid());
