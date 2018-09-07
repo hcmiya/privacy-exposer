@@ -17,8 +17,5 @@ int retrieve_sock_info(
 long lapse_ms(struct timespec *from);
 bool end_with(char const *haystack, char const *needle);
 
-void pelog_not_syslog(int priority, char const *fmt, ...);
-void pelog_not_syslog_th(int priority, char const *fmt, ...);
-void vpelog_not_syslog(int priority, char const *fmt, va_list ap);
-void pelog_syslog_th(int priority, char const *fmt, ...);
-void pelog_set_level(int pri);
+// logger.c
+void pelog_open(bool use_syslog, int loglevel);

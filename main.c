@@ -40,7 +40,7 @@ static void init(int argc, char **argv) {
 #undef conf_from_env
 
 	int c;
-	long loglevel;
+	long loglevel = -1;
 	char *endp;
 	while ((c = getopt(argc, argv, "p:l:")) != -1) {
 		switch (c) {
@@ -61,26 +61,7 @@ static void init(int argc, char **argv) {
 		}
 	}
 
-	if (pidfile) {
-		openlog("privacy-exposer", 0, LOG_USER);
-		int const tab[] = {
-			LOG_EMERG,  LOG_ALERT,  LOG_CRIT,  LOG_ERR,  LOG_WARNING,  LOG_NOTICE,  LOG_INFO, LOG_DEBUG
-		};
-		int logmask = 0;
-		for (int i = 0; i <= loglevel; i++) {
-			logmask |= LOG_MASK(tab[i]);
-		}
-		setlogmask(logmask);
-		pelog = syslog;
-		pelog_th = pelog_syslog_th;
-		vpelog = vsyslog;
-	}
-	else {
-		pelog_set_level((int)loglevel);
-		pelog = pelog_not_syslog;
-		pelog_th = pelog_not_syslog_th;
-		vpelog = vpelog_not_syslog;
-	}
+	pelog_open(!!pidfile, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
 }
 
 static void daemonize() {
