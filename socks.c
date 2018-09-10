@@ -17,12 +17,22 @@
 #include <syslog.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <ctype.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
 
+#ifdef NDEBUG
 static int const timeout_greet = 3000;
-static int const timeout_short = 1000;
+static int const timeout_read_short = 1000;
+static int const timeout_read_upstream = 20000;
+static int const timeout_write = 500;
+#else
+static int const timeout_greet = -1;
+static int const timeout_read_short = -1;
+static int const timeout_read_upstream = -1;
+static int const timeout_write = -1;
+#endif
 
 static void fail(int type) {
 	// type
@@ -84,7 +94,7 @@ static void write_header(int fd, void const *buf_, size_t left) {
 		.events = POLLOUT,
 	};
 	while (left) {
-		int poll_ret = poll(&po, 1, 500);
+		int poll_ret = poll(&po, 1, timeout_write);
 		if (poll_ret == 0) {
 			pelog_th(LOG_INFO, "send() timed out");
 			fail(-1);
@@ -103,49 +113,175 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static int get_upstream_socket(struct petls *tls, char const *host, char const *port) {
-	struct addrinfo *res;
-	int gai_ret = getaddrinfo(host, port, &(struct addrinfo) {
-		.ai_flags = AI_NUMERICSERV,
-		.ai_family = AF_UNSPEC,
-		.ai_socktype = SOCK_STREAM,
-		.ai_protocol = 6,
-	}, &res);
-	if (gai_ret) {
-		pelog_th(LOG_INFO, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
-		fail(3);
+static struct rule *match_rule(char const *host, uint16_t port) {
+	struct rule *rule = rule_list;
+
+	while (rule) {
+		bool rule_matched = false;
+		switch (rule->type) {
+		case rule_host:
+			{
+				bool host_matched = false;
+				if (!*rule->u.host.name) {
+					host_matched = true;
+				}
+				else if (*rule->u.host.name == '.') {
+					host_matched = end_with(host, rule->u.host.name);
+				}
+				else {
+					host_matched = strcmp(host, rule->u.host.name) == 0;
+				}
+				if (host_matched) {
+					uint16_t *ports = rule->u.host.ports;
+					for (int i = 0; i < rule->u.host.port_num; i += 2) {
+						if (port >= ports[i] && port <= ports[i + 1]) return rule;
+					}
+				}
+			}
+			break;
+// 		case rule_net4:
+// 			{
+// 			}
+// 			break;
+// 		case rule_net6:
+// 			{
+// 			}
+// 			break;
+		}
+		rule = rule->next;
 	}
-	int error = 1;
-	for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
-		int sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-		if (sockfd != -1) {
-			int conerr = connect(sockfd, rp->ai_addr, rp->ai_addrlen);
-			if (!conerr) {
-				tls->dest = sockfd;
-				freeaddrinfo(res);
-				return sockfd;
-			}
-			switch (errno) {
-			case ENETUNREACH:
-				error = 3; break;
-			case EHOSTUNREACH:
-			case ETIMEDOUT:
-				error = 4; break;
-			case ECONNREFUSED:
-				error = 5; break;
-			default:
-				error = 1; break;
-			}
-			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
+	return NULL;
+}
+
+static void greet_next_proxy(struct petls *tls, char const *host, char const *port, struct proxy *proxy, int upstream) {
+	while (proxy) {
+		char const *nexthost, *nextport;
+		uint8_t buf[300];
+		if (proxy->next) {
+			nexthost = proxy->next->u.host_port.name;
+			nextport = proxy->next->u.host_port.port;
 		}
 		else {
-			pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
+			nexthost = host;
+			nextport = port;
 		}
-		close(sockfd);
+
+		if (strlen(nexthost) > 255) {
+			pelog_th(LOG_INFO, "upstream: too long hostname: %s", nexthost);
+			fail(1);
+		}
+		// socks5
+		pelog_th(LOG_DEBUG, "upstream: connect request");
+		write_header(upstream, "\x5\x1\x0", 3);
+		read_header(upstream, buf, 2, timeout_read_short, false);
+		if (buf[0] != 5 || buf[1] != 0) {
+			fail(5);
+		}
+
+		pelog_th(LOG_DEBUG, "upstream: tell destination");
+		uint8_t *p = buf, *req = buf, hostlen = (uint8_t)strlen(nexthost);
+		uint16_t portbin = htons((uint16_t)atoi(nextport));
+		memcpy(p, "\x5\x1\x0\x3", 4);
+		memcpy(p += 4, &hostlen, 1);
+		memcpy(p += 1, nexthost, hostlen);
+		memcpy(p += hostlen, &portbin, 2);
+		p += 2;
+		size_t reqlen = p - buf;
+		write_header(upstream, req, reqlen);
+
+		read_header(upstream, p, 5, timeout_read_upstream, false);
+		if (p[0] != 5 || p[2] != 0) {
+			fail(1);
+		}
+		int left;
+		switch(p[3]) {
+		case 1:
+			left = 5; break;
+		case 3:
+			left = p[4] + 2; break;
+		case 4:
+			left = 17; break;
+		default:
+			fail(1);
+		}
+		read_header(upstream, p + 5, left, timeout_read_short, false);
+
+		if (p[1]) {
+			req[1] = p[1];
+			write_header(tls->src, req, reqlen);
+			fail(-1);
+		}
+		pelog_th(LOG_DEBUG, "upstream: connect succeeded");
+		proxy = proxy->next;
 	}
-	freeaddrinfo(res);
-	fail(error);
-	// NOTREACHED
+}
+
+static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct proxy *proxy) {
+	char const *nexthost, *nextport;
+	bool unixsock = false;
+	if (proxy) {
+//		switch (proxy->type) {
+// 		case proxy_type_unix_socks5:
+//			unixsock = true;
+// 			break;
+//		}
+		if (!unixsock) {
+			nexthost = proxy->u.host_port.name;
+			nextport = proxy->u.host_port.port;
+		}
+	}
+	else {
+		nexthost = host;
+		nextport = port;
+	}
+
+	int sockfd;
+	if (unixsock) {}
+	else {
+		struct addrinfo *res;
+		int gai_ret = getaddrinfo(nexthost, nextport, &(struct addrinfo) {
+			.ai_flags = AI_NUMERICSERV,
+			.ai_family = AF_UNSPEC,
+			.ai_socktype = SOCK_STREAM,
+			.ai_protocol = 6,
+		}, &res);
+		if (gai_ret) {
+			pelog_th(LOG_INFO, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
+			fail(3);
+		}
+		int error = 1;
+		struct addrinfo *rp;
+		for (rp = res; rp; rp = rp->ai_next) {
+			sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+			if (sockfd != -1) {
+				if (!connect(sockfd, rp->ai_addr, rp->ai_addrlen)) {
+					break;
+				}
+				switch (errno) {
+				case ENETUNREACH:
+					error = 3; break;
+				case EHOSTUNREACH:
+				case ETIMEDOUT:
+					error = 4; break;
+				case ECONNREFUSED:
+					error = 5; break;
+				default:
+					error = 1; break;
+				}
+				pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
+			}
+			else {
+				pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
+			}
+			close(sockfd);
+		}
+		freeaddrinfo(res);
+		if (!rp) fail(error);
+	}
+
+	tls->dest = sockfd;
+	if (proxy) greet_next_proxy(tls, host, port, proxy, sockfd);
+	return sockfd;
 }
 
 static int parse_header(struct petls *tls) {
@@ -174,7 +310,7 @@ static int parse_header(struct petls *tls) {
 	write_header(src, "\x5\x0", 2);
 
 	// 接続先要求の情報を得る
-	read_header(src, buf, 4, timeout_short, true);
+	read_header(src, buf, 4, timeout_read_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
 	if (buf[0] != 5 || buf[2] != 0) {
 		fail(1);
@@ -185,103 +321,63 @@ static int parse_header(struct petls *tls) {
 	}
 
 	// 接続先ホスト
-	char destname[262], *destport;
-	uint8_t destbin[257];
+	char destname[256], destport[6];
+	uint8_t destbin[259];
 	size_t destlen;
 	destbin[0] = buf[3];
 	switch (destbin[0]) {
 	case 1: // IPv4
-		read_header(src, &destbin[1], 4, timeout_short, false);
-		inet_ntop(AF_INET, &destbin[1], destname, 262);
+		read_header(src, &destbin[1], 4, timeout_read_short, false);
+		inet_ntop(AF_INET, &destbin[1], destname, 256);
 		destlen = 5;
 		break;
 	case 3: // FQDN
-		read_header(src, &destbin[1], 1, timeout_short, false);
+		read_header(src, &destbin[1], 1, timeout_read_short, false);
 		if (destbin[1] == 0) {
 			fail(1);
 		}
-		read_header(src, destname, destbin[1], timeout_short, false);
+		read_header(src, destname, destbin[1], timeout_read_short, false);
 		destname[destbin[1]] = '\0';
 		memcpy(&destbin[2], destname, destbin[1]);
 		destlen = destbin[1] + 2;
 		break;
 	case 4: // IPv6
-		read_header(src, &destbin[1], 16, timeout_short, false);
-		inet_ntop(AF_INET6, &destbin[1], destname, 262);
+		read_header(src, &destbin[1], 16, timeout_read_short, false);
+		inet_ntop(AF_INET6, &destbin[1], destname, 256);
 		destlen = 17;
 		break;
 	default:
 		fail(8);
 		break;
 	}
+	// 小文字化
+	for (char *p = destname; *p; p++) *p = tolower(*p);
 
 	// ポート
-	destport = destname + strlen(destname) + 1;
 	uint8_t portbin[2];
-	read_header(src, portbin, 2, timeout_short, false);
+	read_header(src, portbin, 2, timeout_read_short, false);
 	uint16_t port = htons(*(uint16_t*)portbin);
+	memcpy(destbin + destlen, portbin, 2);
+	destlen += 2;
 	sprintf(destport, "%d", port);
 	sprintf(tls->reqhost, "%s#%s", destname, destport);
 	pelog_th(LOG_DEBUG, "header parsed");
 
-	if (port != 80 && port != 443) {
-		pelog_th(LOG_INFO, "refused by rules: port = %u", port);
-		fail(2);
+	// 宛先に応じたプロクシを選択
+	struct rule *rule = match_rule(destname, port);
+	if (rule && rule->proxy && rule->proxy->type == proxy_type_deny) {
+		pelog_th(LOG_INFO, "refused by rules");
+		uint8_t *p = buf;
+		memcpy(p, "\x5\x2\x0", 3);
+		memcpy(p += 3, destbin, destlen);
+		write_header(src, buf, p - buf + destlen);
+		fail(-1);
 	}
 
 	// 上流に接続してソケットを得る
-	bool to_dark = end_with(destname, ".onion") || end_with(destname, ".i2p");
-	int upstream;
-	if (to_dark) {
-		upstream = get_upstream_socket(tls, UPSTREAM_ADDR, UPSTREAM_PORT);
-	}
-	else {
-		upstream = get_upstream_socket(tls, destname, destport);
-	}
+	int upstream = get_upstream_socket(tls, destname, destport, rule->proxy);
 
-	if (to_dark) {
-		// socks
-		pelog_th(LOG_DEBUG, "upstream: connect request");
-		write_header(upstream, "\x5\x1\x0", 3);
-		read_header(upstream, buf, 2, timeout_short, false);
-		if (buf[0] != 5 || buf[1] != 0) {
-			fail(5);
-		}
-
-		pelog_th(LOG_DEBUG, "upstream: tell destination");
-		uint8_t *p = buf, *req = buf;
-		memcpy(p, "\x5\x1\x0", 3);
-		memcpy(p += 3, destbin, destlen);
-		memcpy(p += destlen, portbin, 2);
-		p += 2;
-		size_t reqlen = p - buf;
-		write_header(upstream, req, reqlen);
-
-		read_header(upstream, p, 5, 20000, false);
-		if (p[0] != 5 || p[2] != 0) {
-			fail(1);
-		}
-		int left;
-		switch(p[3]) {
-		case 1:
-			left = 5; break;
-		case 3:
-			left = p[4] + 2; break;
-		case 4:
-			left = 17; break;
-		default:
-			fail(1);
-		}
-		read_header(upstream, p + 5, left, timeout_short, false);
-
-		if (p[1]) {
-			req[1] = p[1];
-			write_header(src, req, reqlen);
-			fail(-1);
-		}
-		pelog_th(LOG_DEBUG, "upstream: connect succeeded");
-	}
-
+	// 成功したのでこのデーモンから出ているソースアドレスとポートを接続元へ返す
 	char srcname[64];
 	uint8_t srcaddrbin[16];
 	uint16_t srcport;
@@ -297,9 +393,14 @@ static int parse_header(struct petls *tls) {
 	memcpy(&buf[4 + addrlen], &(uint16_t[]){htons(srcport)}, 2);
 	write_header(src, buf, addrlen + 6);
 
+	// ログ: dest <- relay | relay <- src
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);
+	sprintf((char*)buf, "established: %s#%d <- %s#%d | ", destname, port, srcname, srcport);
+	retrieve_sock_info(false, src, destname, srcaddrbin, &port);
+	retrieve_sock_info(true, src, srcname, srcaddrbin, &srcport);
+	sprintf((char*)buf + strlen((char*)buf), "%s#%d <- %s#%d", destname, port, srcname, srcport);
 
-	pelog_th(LOG_INFO, "established: %s#%d <- %s#%d", destname, port, srcname, srcport);
+	pelog_th(LOG_INFO, "%s", buf);
 	return upstream;
 }
 

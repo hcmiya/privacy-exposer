@@ -24,25 +24,12 @@
 
 static char const *pidfile;
 
-static void conf_from_env_(char const ** gvar, char const *varname) {
-	char const *env = getenv(varname);
-	if (env && *env) {
-		*gvar = strdup(env);
-	}
-}
-
-static void init(int argc, char **argv) {
-#define conf_from_env(X) conf_from_env_(&X, #X);
-	conf_from_env(BIND_ADDR);
-	conf_from_env(BIND_PORT);
-	conf_from_env(UPSTREAM_ADDR);
-	conf_from_env(UPSTREAM_PORT);
-#undef conf_from_env
-
+static int init(int argc, char **argv) {
 	int c;
 	long loglevel = -1;
 	char *endp;
-	while ((c = getopt(argc, argv, "p:l:")) != -1) {
+	char *rules = NULL;
+	while ((c = getopt(argc, argv, "p:l:r:")) != -1) {
 		switch (c) {
 		case 'p':
 			pidfile = optarg;
@@ -55,6 +42,9 @@ static void init(int argc, char **argv) {
 				exit(1);
 			}
 			break;
+		case 'r':
+			rules = optarg;
+			break;
 		case '?':
 			exit(1);
 			break;
@@ -62,6 +52,17 @@ static void init(int argc, char **argv) {
 	}
 
 	pelog_open(!!pidfile, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
+	if (rules) {
+		FILE *rfp = fopen(rules, "r");
+		if (!rfp) {
+			perror("-r");
+			exit(1);
+		}
+		parse_rules(rfp);
+		fclose(rfp);
+	}
+
+	return optind;
 }
 
 static void daemonize() {
@@ -140,10 +141,19 @@ void trap(int sig) {
 }
 
 int main(int argc, char **argv) {
-	init(argc, argv);
+	int argstart = init(argc, argv);
+	char *bind_addr, *bind_port;
+	if (argv[argstart]) {
+		bind_addr = argv[argstart];
+		bind_port = argv[argstart + 1] ? argv[argstart + 1] : "9000";
+	}
+	else {
+		bind_addr = "localhost";
+		bind_port = "9000";
+	}
 
 	struct addrinfo *res;
-	int gai_ret = getaddrinfo(BIND_ADDR, BIND_PORT, &(struct addrinfo) {
+	int gai_ret = getaddrinfo(bind_addr, bind_port, &(struct addrinfo) {
 		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
 		.ai_family = AF_UNSPEC,
 		.ai_socktype = SOCK_STREAM,
