@@ -185,15 +185,24 @@ static size_t parse_rule_host(char **fields, size_t fieldnum) {
 	if (fieldnum < 1) {
 		error("no arguments for host");
 	}
-	char *host = *fields++;
-	fieldnum--;
-	char *port = strchr(downcase(host), '#');
-	if (port) {
-		*port++ = '\0';
+	size_t rtn = 0;
+	char *host = *fields;
+	if (*host == '#') {
+		host = "";
 	}
-	if (!simple_host_check(host)) {
+	else if (simple_host_check(host)) {
+		fields++;
+		rtn++;
+	}
+	else {
 		error("invalid domain name: %s", host);
 	}
+	char *port = *fields++;
+	if (port && *port == '#') {
+		port++;
+		rtn++;
+	}
+	else port = NULL;
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 	rule_cur->next = calloc(1, sizeof(*rule_cur));
@@ -202,7 +211,14 @@ static size_t parse_rule_host(char **fields, size_t fieldnum) {
 	rule_cur->u.host.name = strdup(host);
 	rule_cur->u.host.ports = port_list;
 	rule_cur->u.host.port_num = port_num;
-	return 1;
+	return rtn;
+}
+
+static size_t parse_rule_all(char **unused, size_t fieldnum) {
+	if (fieldnum == 0) return 0;
+	char tmp[] = "#";
+	parse_rule_host((char*[]){ tmp, NULL }, 1);
+	return 0;
 }
 
 static void parse_fields(char **fields, size_t fieldnum) {
@@ -210,6 +226,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		char const *name;
 		size_t (*parser)(char **, size_t);
 	} const match_table[] = {
+		{ "all", parse_rule_all },
 		{ "host", parse_rule_host },
 		// { "net4", parse_rule_net4 },
 		// { "net6", parse_rule_net6 },
@@ -227,6 +244,9 @@ static void parse_fields(char **fields, size_t fieldnum) {
 	}
 	fields += adv;
 	fieldnum -= adv;
+	if (i == 0 && fieldnum == 0) { // "all", no proxy
+		return;
+	}
 
 	static struct {
 		char *name;

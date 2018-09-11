@@ -403,9 +403,10 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 	}
 }
 
-static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct proxy *proxy) {
+static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct rule *rule) {
 	char const *nexthost, *nextport;
 	bool unixsock = false;
+	struct proxy *proxy = rule ? rule->proxy : NULL;
 	if (proxy) {
 		switch (proxy->type) {
 		case proxy_type_unix_socks5:
@@ -581,7 +582,7 @@ static int parse_header(struct petls *tls) {
 	}
 
 	// 上流に接続してソケットを得る
-	int upstream = get_upstream_socket(tls, destname, destport, rule->proxy);
+	int upstream = get_upstream_socket(tls, destname, destport, rule);
 
 	// 成功したのでこのデーモンから出ているソースアドレスとポートを接続元へ返す
 	char srcname[64];
