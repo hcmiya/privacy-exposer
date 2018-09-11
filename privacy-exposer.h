@@ -19,10 +19,11 @@ struct rule {
 	} u;
 	struct proxy {
 		enum {
-			proxy_type_socks5,
 			proxy_type_deny,
+			proxy_type_socks5,
 			proxy_type_socks4a,
 			proxy_type_unix_socks5,
+			proxy_type_http_connect,
 		} type;
 		union {
 			struct {
@@ -48,6 +49,8 @@ int retrieve_sock_info(
 		uint16_t *port);
 long lapse_ms(struct timespec *from);
 bool end_with(char const *haystack, char const *needle);
+char *downcase(char *s);
+bool simple_host_check(char const *host);
 
 // logger.c
 void pelog_open(bool use_syslog, int loglevel);

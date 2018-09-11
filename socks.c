@@ -155,6 +155,212 @@ static struct rule *match_rule(char const *host, uint16_t port) {
 	return NULL;
 }
 
+static void next_socks5(struct petls *tls, char const *host, char const *port, int upstream) {
+	uint8_t buf[262];
+	if (strlen(host) > 255) {
+		pelog_th(LOG_INFO, "upstream: too long hostname: %s", host);
+		fail(1);
+	}
+	pelog_th(LOG_DEBUG, "upstream: connect request");
+	write_header(upstream, "\x5\x1\x0", 3);
+	read_header(upstream, buf, 2, timeout_read_short, false);
+	if (buf[0] != 5 || buf[1] != 0) {
+		fail(5);
+	}
+
+	pelog_th(LOG_DEBUG, "upstream: tell destination");
+	uint8_t *p = buf, *req = buf, hostlen = (uint8_t)strlen(host);
+	uint16_t portbin = htons((uint16_t)atoi(port));
+	memcpy(p, "\x5\x1\x0\x3", 4);
+	memcpy(p += 4, &hostlen, 1);
+	memcpy(p += 1, host, hostlen);
+	memcpy(p += hostlen, &portbin, 2);
+	p += 2;
+	size_t reqlen = p - buf;
+	write_header(upstream, req, reqlen);
+
+	read_header(upstream, p, 5, timeout_read_upstream, false);
+	if (p[0] != 5 || p[2] != 0) {
+		fail(1);
+	}
+	int left;
+	switch(p[3]) {
+	case 1:
+		left = 5; break;
+	case 3:
+		left = p[4] + 2; break;
+	case 4:
+		left = 17; break;
+	default:
+		fail(1);
+	}
+	read_header(upstream, p + 5, left, timeout_read_short, false);
+
+	if (p[1]) {
+		req[1] = p[1];
+		write_header(tls->src, req, reqlen);
+		fail(-1);
+	}
+}
+
+static ssize_t http_peek(int upstream, void *buf, size_t len) {
+	int const timeout =
+#ifdef NDEBUG
+		20
+#else
+		-1
+#endif
+	;
+	struct pollfd pfd = {
+		.fd = upstream,
+		.events = POLLIN,
+	};
+
+	int poll_ret = poll(&pfd, 1, timeout);
+	if (poll_ret == 0) {
+		fail(1);
+	}
+	if (poll_ret < 0) {
+		fail(1);
+	}
+	ssize_t readlen = recv(upstream, buf, len, MSG_PEEK);
+	if (readlen < 0) {
+		fail(1);
+	}
+	return readlen;
+}
+static bool http_valid_char(int c) {
+	return !(c >= 0x7f || c >= 0 && c < 0x20 && !strchr("\n\r\t", c));
+}
+static bool http_header_char(int c) {
+	return !!strchr("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&'*+-.^_`|~", c);
+}
+
+static int next_http_connect(struct petls *tls, char const *host, char const *port, int upstream) {
+	bool ipv6 = strchr(host, ':');
+	// CONNECT host.example:80 HTTP/1.1
+	// Host: host.example
+	write_header(upstream, "CONNECT ", 8);
+	if (ipv6) write_header(upstream, "[", 1);
+	write_header(upstream, host, strlen(host));
+	if (ipv6) write_header(upstream, "]", 1);
+	write_header(upstream, ":", 1);
+	write_header(upstream, port, strlen(port));
+	write_header(upstream, " HTTP/1.1\r\nHost: ", 17);
+	if (ipv6) write_header(upstream, "[", 1);
+	write_header(upstream, host, strlen(host));
+	if (ipv6) write_header(upstream, "]", 1);
+	write_header(upstream, "\r\n\r\n", 4);
+
+	// HTTP/1.1 200 OK
+	// Header: ***
+	char buf[256], *p;
+	read_header(upstream, buf, 13, timeout_read_upstream, false);
+	if (memcmp(buf, "HTTP/1.1 ", 9) != 0) {
+		return 1;
+	}
+	p = buf + 9;
+	unsigned int st = 0;
+	for (int i = 0; i < 3; i++) {
+		if (!isdigit(*p)) {
+			return 1;
+		}
+		st = st * 10 + (*p - '0');
+		p++;
+	}
+	if (*p != ' ') {
+		return 1;
+		fail(1);
+	}
+	if (st < 200 || st >= 300) {
+		pelog_th(LOG_INFO, "upstream: connection failed: %u", st);
+		fail(-1);
+	}
+
+	// 1文字ずつ読み取っていって、\r\n\r\nに遭遇したら抜ける
+	bool cr = false, terminated = false, header = false;
+	char *cur, *end;
+	while (!terminated) {
+		ssize_t len = http_peek(upstream, buf, 256);
+		if (len == 0) return 2;
+
+		cur = buf; end = cur + len;
+		while (cur < end) {
+			// ステータス行残り
+			int c = *cur++;
+			if (!http_valid_char(c)) return 1;
+
+			if (!cr && c == '\n') {
+				return 1;
+			}
+			if (cr) {
+				if (c != '\n') {
+					return 1;
+				}
+				cr = false;
+				terminated = true;
+				break;
+			}
+			else {
+				cr = c == '\r';
+			}
+		}
+		read(upstream, buf, cur - buf);
+	}
+
+	bool established = false;
+	while (!established) {
+		ssize_t len = http_peek(upstream, buf, 256);
+		if (len == 0) return 2;
+
+		cur = buf; end = cur + len;
+		while (cur < end) {
+			// ヘッダ行(プロクシ返答なら本当は無いはず)
+			int c = *cur++;
+			if (!http_valid_char(c)) return 1;
+
+			if (!cr && c == '\n') {
+				return 1;
+			}
+			if (cr) {
+				if (c != '\n') {
+					fail(-1);
+				}
+				if (terminated) {
+					established = true;
+					break;
+				}
+				else {
+					cr = false;
+					terminated = true;
+				}
+			}
+			else if (header) {
+				if (http_header_char(c)) {}
+				else if (c == ':') header = false;
+				else return 1;
+			}
+			else {
+				if (terminated) {
+					if (c == '\r') cr = true;
+					else if (http_header_char(c)) {
+						terminated = false;
+						header = true;
+					}
+					else {
+						return 1;
+					}
+				}
+				else {
+					cr = c == '\r';
+				}
+			}
+		}
+		read(upstream, buf, cur - buf);
+	}
+	return 0;
+}
+
 static void greet_next_proxy(struct petls *tls, char const *host, char const *port, struct proxy *proxy, int upstream) {
 	while (proxy) {
 		char const *nexthost, *nextport;
@@ -168,50 +374,29 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 			nextport = port;
 		}
 
-		if (strlen(nexthost) > 255) {
-			pelog_th(LOG_INFO, "upstream: too long hostname: %s", nexthost);
-			fail(1);
-		}
-		// socks5
-		pelog_th(LOG_DEBUG, "upstream: connect request");
-		write_header(upstream, "\x5\x1\x0", 3);
-		read_header(upstream, buf, 2, timeout_read_short, false);
-		if (buf[0] != 5 || buf[1] != 0) {
-			fail(5);
-		}
-
-		pelog_th(LOG_DEBUG, "upstream: tell destination");
-		uint8_t *p = buf, *req = buf, hostlen = (uint8_t)strlen(nexthost);
-		uint16_t portbin = htons((uint16_t)atoi(nextport));
-		memcpy(p, "\x5\x1\x0\x3", 4);
-		memcpy(p += 4, &hostlen, 1);
-		memcpy(p += 1, nexthost, hostlen);
-		memcpy(p += hostlen, &portbin, 2);
-		p += 2;
-		size_t reqlen = p - buf;
-		write_header(upstream, req, reqlen);
-
-		read_header(upstream, p, 5, timeout_read_upstream, false);
-		if (p[0] != 5 || p[2] != 0) {
-			fail(1);
-		}
-		int left;
-		switch(p[3]) {
-		case 1:
-			left = 5; break;
-		case 3:
-			left = p[4] + 2; break;
-		case 4:
-			left = 17; break;
-		default:
-			fail(1);
-		}
-		read_header(upstream, p + 5, left, timeout_read_short, false);
-
-		if (p[1]) {
-			req[1] = p[1];
-			write_header(tls->src, req, reqlen);
-			fail(-1);
+		switch (proxy->type) {
+		case proxy_type_socks5:
+		case proxy_type_unix_socks5:
+			next_socks5(tls, nexthost, nextport, upstream);
+			break;
+		case proxy_type_http_connect:
+			{
+				int http_error = next_http_connect(tls, nexthost, nextport, upstream);
+				switch (http_error) {
+				case 0:
+					break;
+				case 1:
+					pelog_th(LOG_INFO, "upstream: unexpected response");
+					break;
+				case 2:
+					pelog_th(LOG_INFO, "upstream: unexpected eof");
+					break;
+				}
+				if (http_error) {
+					fail(1);
+				}
+			}
+			break;
 		}
 		pelog_th(LOG_DEBUG, "upstream: connect succeeded");
 		proxy = proxy->next;
@@ -350,9 +535,14 @@ static int parse_header(struct petls *tls) {
 	case 3: // FQDN
 		read_header(src, &destbin[1], 1, timeout_read_short, false);
 		if (destbin[1] == 0) {
+			pelog_th(LOG_INFO, "malformed hostname received");
 			fail(1);
 		}
 		read_header(src, destname, destbin[1], timeout_read_short, false);
+		if (memchr(destname, '\0', destbin[1]) || (destname[destbin[1]] = '\0', !simple_host_check(destname))) {
+			pelog_th(LOG_INFO, "malformed hostname received");
+			fail(1);
+		}
 		destname[destbin[1]] = '\0';
 		memcpy(&destbin[2], destname, destbin[1]);
 		destlen = destbin[1] + 2;
@@ -367,7 +557,7 @@ static int parse_header(struct petls *tls) {
 		break;
 	}
 	// 小文字化
-	for (char *p = destname; *p; p++) *p = tolower(*p);
+	downcase(destname);
 
 	// ポート
 	uint8_t portbin[2];

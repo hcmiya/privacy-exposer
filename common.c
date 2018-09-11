@@ -16,6 +16,7 @@
 #include <stdarg.h>
 #include <time.h>
 #include <sys/un.h>
+#include <ctype.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -64,3 +65,22 @@ bool end_with(char const *haystack, char const *needle) {
 	size_t nlen = strlen(needle);
 	return hlen >= nlen && !strcmp(haystack + hlen - nlen, needle);
 }
+
+char *downcase(char *s) {
+	char *r = s;
+	while (*s) *s = tolower(*s), s++;
+	return r;
+}
+
+bool simple_host_check(char const *host) {
+	// 実際に接続を行うところでライブラリにエラーチェックをさせるので、
+	// ここでは文字種の確認に留める
+	if (strlen(host) != strspn(host,
+		strchr(host, ':') ?
+			"0123456789abcdefABCDEF.:" :
+			"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-._"
+		)) return false;
+	if (*host == '-' || strstr(host, "..") || strstr(host, ".-") || strstr(host, "-.") || end_with(host, "-")) return false;
+	return true;
+}
+

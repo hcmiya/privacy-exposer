@@ -28,10 +28,6 @@ static size_t lineno = 1;
 static struct rule rule_begin, *rule_cur;
 static struct proxy proxy_begin, *proxy_cur;
 
-static bool simple_host_check(char const *host) {
-	return !(*host == '-' || strstr(host, "..") || strstr(host, ".-") || strstr(host, "-.") || end_with(host, "-"));
-}
-
 static void error(char const *fmt, ...) {
 	fprintf(stderr, "line #%zu: ", lineno);
 	va_list ap;
@@ -111,6 +107,12 @@ static size_t parse_proxy_deny(char **fields, size_t fieldnum, char *name, int t
 }
 
 static size_t parse_port(char *strport, uint16_t **portlist) {
+	if (!strport || !*strport) {
+		*portlist = calloc(2, sizeof(**portlist));
+		(*portlist)[1] = 65535;
+		return 2;
+	}
+
 	size_t comma_num = 0;
 	char *p = strport;
 	while (*p) {
@@ -185,12 +187,10 @@ static size_t parse_rule_host(char **fields, size_t fieldnum) {
 	}
 	char *host = *fields++;
 	fieldnum--;
-	char *port = host;
-	while (*port && *port != '#') {
-		*port = tolower(*port);
-		port++;
+	char *port = strchr(downcase(host), '#');
+	if (port) {
+		*port++ = '\0';
 	}
-	if (*port == '#') *port++ = '\0';
 	if (!simple_host_check(host)) {
 		error("invalid domain name: %s", host);
 	}
@@ -233,11 +233,11 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		int type;
 		size_t (*parser)(char **, size_t, char *, int);
 	} const proxy_table[] = {
-		{ "socks5", proxy_type_socks5, parse_proxy_hostname },
 		{ "deny", proxy_type_deny, parse_proxy_deny },
+		{ "socks5", proxy_type_socks5, parse_proxy_hostname },
 		// { "socks4a", proxy_type_socks4a, parse_proxy_socks4a },
 		{ "unix-socks5", proxy_type_unix_socks5, parse_proxy_abs_path },
-		// { "http-connect", proxy_type_http_connect, parse_proxy_http_connect },
+		{ "http-connect", proxy_type_http_connect, parse_proxy_hostname },
 		{ NULL, 0, NULL },
 	};
 	proxy_cur = &proxy_begin;
