@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <time.h>
+#include <sys/un.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -33,11 +34,18 @@ int retrieve_sock_info(
 	struct sockaddr *addr = (void*)buf;
 	socklen_t addrlen = 128;
 	(peer ? getpeername : getsockname)(fd, addr, &addrlen);
-	getnameinfo(addr, addrlen, addrname, 40, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
-	
 	int type = addr->sa_family;
-	*port = atoi(txtport);
-	inet_pton(type, addrname, addrbin);
+	if (type == AF_UNIX) {
+		struct sockaddr_un *un = (void*)addr;
+		strncpy(addrname, un->sun_path, 39);
+		addrname[39] = '\0';
+		*port = 0;
+	}
+	else {
+		getnameinfo(addr, addrlen, addrname, 40, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
+		*port = atoi(txtport);
+		inet_pton(type, addrname, addrbin);
+	}
 	
 	return type;
 }

@@ -18,6 +18,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <ctype.h>
+#include <sys/un.h>
+#include <stddef.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -220,11 +222,11 @@ static int get_upstream_socket(struct petls *tls, char const *host, char const *
 	char const *nexthost, *nextport;
 	bool unixsock = false;
 	if (proxy) {
-//		switch (proxy->type) {
-// 		case proxy_type_unix_socks5:
-//			unixsock = true;
-// 			break;
-//		}
+		switch (proxy->type) {
+		case proxy_type_unix_socks5:
+			unixsock = true;
+			break;
+		}
 		if (!unixsock) {
 			nexthost = proxy->u.host_port.name;
 			nextport = proxy->u.host_port.port;
@@ -236,7 +238,21 @@ static int get_upstream_socket(struct petls *tls, char const *host, char const *
 	}
 
 	int sockfd;
-	if (unixsock) {}
+	if (unixsock) {
+		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+
+		socklen_t len = offsetof(struct sockaddr_un, sun_path) + strlen(proxy->u.path) + 1;
+		uint8_t buf[len];
+		struct sockaddr_un *upath = (void*)buf;
+		upath->sun_family = AF_UNIX;
+		strcpy(upath->sun_path, proxy->u.path);
+
+		if (connect(sockfd, (struct sockaddr *)upath, len)) {
+			pelog_th(LOG_INFO, "upstream: connect() to unix: %s", strerror(errno));
+			close(sockfd);
+			fail(1);
+		}
+	}
 	else {
 		struct addrinfo *res;
 		int gai_ret = getaddrinfo(nexthost, nextport, &(struct addrinfo) {
@@ -386,6 +402,7 @@ static int parse_header(struct petls *tls) {
 	switch(type) {
 	case AF_INET: type = 1; addrlen = 4; break;
 	case AF_INET6: type = 4; addrlen = 16; break;
+	case AF_UNIX: type = 3; addrlen = 5; memcpy(srcaddrbin, "\x4unix", 5); break;
 	}
 	memcpy(buf, "\x5\x0\x0", 3);
 	buf[3] = type;

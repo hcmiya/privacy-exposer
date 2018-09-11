@@ -81,6 +81,23 @@ static size_t parse_proxy_hostname(char **fields, size_t fieldnum, char *name, i
 	return 2;
 }
 
+static size_t parse_proxy_abs_path(char **fields, size_t fieldnum, char *name, int type) {
+	if (proxy_cur != &proxy_begin) {
+		error("\"%s\" can not be used for proxy chain", name);
+	}
+	if (fieldnum < 1) {
+		error("too few arguments for %s", name);
+	}
+	if (**fields != '/') {
+		error("invalid path for %s: %s", name, *fields);
+	}
+	proxy_cur->next = calloc(1, sizeof(*proxy_cur));
+	proxy_cur = proxy_cur->next;
+	proxy_cur->type = type;
+	proxy_cur->u.path = strdup(*fields);
+	return 1;
+}
+
 static size_t parse_proxy_deny(char **fields, size_t fieldnum, char *name, int type) {
 	if (proxy_cur != &proxy_begin) {
 		error("\"deny\" can not be used for proxy chain");
@@ -219,7 +236,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		{ "socks5", proxy_type_socks5, parse_proxy_hostname },
 		{ "deny", proxy_type_deny, parse_proxy_deny },
 		// { "socks4a", proxy_type_socks4a, parse_proxy_socks4a },
-		// { "unix-socks5", proxy_type_unix_socks5, parse_proxy_unix_socks5 },
+		{ "unix-socks5", proxy_type_unix_socks5, parse_proxy_abs_path },
 		// { "http-connect", proxy_type_http_connect, parse_proxy_http_connect },
 		{ NULL, 0, NULL },
 	};
