@@ -18,6 +18,7 @@ static int level = LOG_DEBUG;
 static void pelog_not_syslog(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
+	printf("[%ld] ", (long)getpid());
 	va_list ap;
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
@@ -29,7 +30,7 @@ static void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
 	struct petls *tls = pthread_getspecific(sock_cleaner);
-	printf("%s %s: %ldms: ", tls->id, tls->reqhost, lapse_ms(&tls->btime));
+	printf("[%ld] %s %s: %ldms: ", (long)getpid(), tls->id, tls->reqhost, lapse_ms(&tls->btime));
 
 	va_list ap;
 	va_start(ap, fmt);
@@ -40,6 +41,7 @@ static void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 
 static void vpelog_not_syslog(int priority, char const *fmt, va_list ap) {
 	if (priority > level) return;
+	printf("[%ld] ", (long)getpid());
 	va_list copyap;
 	va_copy(copyap, ap);
 	vprintf(fmt, copyap);

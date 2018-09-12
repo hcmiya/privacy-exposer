@@ -814,8 +814,8 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 			}
 		}
 	}
-	pelog(LOG_NOTICE, "worker %ld: received sighup. waiting for %zu connections", (long)getpid(), connection_num);
+	pelog(LOG_NOTICE, "received sighup. waiting for %zu connections", connection_num);
 	pthread_join(count_th, NULL);
-	pelog(LOG_NOTICE, "worker %ld: exited gracefully", (long)getpid());
+	pelog(LOG_NOTICE, "exited gracefully");
 	return 0;
 }
