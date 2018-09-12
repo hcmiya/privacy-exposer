@@ -216,6 +216,7 @@ int main(int argc, char **argv) {
 		getnameinfo(rp->ai_addr, rp->ai_addrlen, addr, 58, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
 		sprintf(addr + strlen(addr), "#%s", txtport);
 		poll_list[bind_num].fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		setsockopt(poll_list[bind_num].fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
 		if (poll_list[bind_num].fd < 0) {
 			pelog(LOG_ERR, "failed to create socket: %s: %s", addr, strerror(errno));
 			continue;
@@ -232,7 +233,6 @@ int main(int argc, char **argv) {
 				close(poll_list[bind_num].fd);
 			}
 			else {
-				setsockopt(poll_list[bind_num].fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
 				poll_list[bind_num].events = POLLIN;
 				pelog(LOG_NOTICE, "listen: %s", addr);
 				bind_num++;
