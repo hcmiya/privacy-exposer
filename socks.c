@@ -20,6 +20,7 @@
 #include <ctype.h>
 #include <sys/un.h>
 #include <stddef.h>
+#include <inttypes.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -35,6 +36,23 @@ static int const timeout_read_short = -1;
 static int const timeout_read_upstream = -1;
 static int const timeout_write = -1;
 #endif
+
+static int count_pipe[2];
+static size_t connection_num;
+static bool quitting;
+
+void clean_sock(void *tls_) {
+	struct petls *tls = tls_;
+	shutdown(tls->src, SHUT_RDWR);
+	close(tls->src);
+	if (tls->dest != -1) {
+		shutdown(tls->dest, SHUT_RDWR);
+		close(tls->dest);
+	}
+	pelog(LOG_DEBUG, "%s %s: %dms: clean", tls->id, tls->reqhost, lapse_ms(&tls->btime));
+	free(tls);
+	write(count_pipe[1], (int8_t[]){-1}, 1);
+}
 
 static void fail(int type) {
 	// type
@@ -67,6 +85,9 @@ static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgre
 	};
 	while (left) {
 		int poll_ret = poll(&po, 1, timeout);
+		if (poll_ret < 0) {
+			if (errno == EINTR) continue;
+		}
 		if (poll_ret == 0) {
 			pelog_th(LOG_INFO, "%s: recv() timed out", errorat);
 			fail(atgreet ? -1 : 3);
@@ -97,6 +118,9 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	};
 	while (left) {
 		int poll_ret = poll(&po, 1, timeout_write);
+		if (poll_ret < 0) {
+			if (errno == EINTR) continue;
+		}
 		if (poll_ret == 0) {
 			pelog_th(LOG_INFO, "send() timed out");
 			fail(-1);
@@ -643,6 +667,7 @@ void *do_relay(void *pp_) {
 	while (1) {
 		ssize_t readlen = recv(pp->r, buf, buflen, 0);
 		if (readlen == -1) {
+			if (errno == EINTR) continue;
 			pelog_relay(LOG_INFO, pp->tls, "recv %s: error: %s", pp->rname, strerror(errno));
 			break;
 		} else if (readlen == 0) {
@@ -655,6 +680,7 @@ void *do_relay(void *pp_) {
 		while (readlen) {
 			ssize_t writelen = send(pp->w, p, readlen, MSG_NOSIGNAL);
 			if (writelen == -1) {
+				if (errno == EINTR) continue;
 				pelog_relay(LOG_INFO, pp->tls, "send %s: send(): %s", pp->wname, strerror(errno));
 				goto CLOSE;
 			}
@@ -706,3 +732,90 @@ void *do_socks(void *tls_) {
 	return NULL;
 }
 
+static void force_exit(int sig) {
+	exit(1);
+}
+static void trap_hup(int hup) {
+	quitting = true;
+	if (!connection_num) {
+		close(count_pipe[1]);
+	}
+}
+
+static void *count_connection(void *_) {
+	int8_t incr;
+	ssize_t readlen;
+	while ((readlen = read(count_pipe[0], &incr, 1)) != 0) {
+		if (readlen > 0) {
+			connection_num += incr;
+			if (incr < 0) {
+				pelog(LOG_DEBUG, "%zu connections left", connection_num);
+			}
+		}
+		if (quitting && !connection_num) {
+			close(count_pipe[1]);
+		}
+	}
+}
+
+int do_accept(struct pollfd *poll_list, size_t bind_num) {
+	signal(SIGINT, SIG_DFL);
+
+	struct sigaction sa = {0};
+	sigfillset(&sa.sa_mask);
+	sa.sa_handler = force_exit,
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGQUIT, &sa, NULL);
+	sa.sa_handler = trap_hup;
+	sigaction(SIGHUP, &sa, NULL);
+
+	pipe(count_pipe);
+	pthread_t count_th;
+	pthread_create(&count_th, NULL, count_connection, NULL);
+
+	pthread_attr_t pattr;
+	pthread_attr_init(&pattr);
+	pthread_attr_setdetachstate(&pattr, PTHREAD_CREATE_DETACHED);
+
+	pthread_key_create(&sock_cleaner, clean_sock);
+
+	sigprocmask(SIG_UNBLOCK, &sa.sa_mask, NULL);
+
+	int thread_id = 1;
+	for (int live = bind_num; !quitting && live;) {
+		int poll_ret = poll(poll_list, bind_num, -1);
+		if (poll_ret < 0) {
+			if (errno == EINTR) break;
+			pelog(LOG_ERR, "poll(): %s", strerror(errno));
+			return 1;
+		}
+
+		for (int i = 0; i < bind_num && poll_ret; i++) {
+			if (poll_list[i].revents & POLLIN) {
+				poll_ret--;
+				int confd = accept(poll_list[i].fd, NULL, NULL);
+				if (confd < 0) {
+					pelog(LOG_ERR, "accept(): %s", strerror(errno));
+					continue;
+				}
+				struct petls *tls = calloc(1, sizeof(*tls));
+				tls->src = confd;
+				tls->dest = -1;
+				sprintf(tls->id, "%08"PRIX32, thread_id++);
+				strcpy(tls->reqhost, "(?)");
+				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
+				write(count_pipe[1], (uint8_t[]){1}, 1);
+			}
+			else if (poll_list[i].revents) {
+				pelog(LOG_ERR, "accept() (from poll())");
+				poll_ret--;
+				poll_list[i].fd = ~poll_list[i].fd;
+				live--;
+			}
+		}
+	}
+	pelog(LOG_NOTICE, "worker %ld: received sighup. waiting for %zu connections", (long)getpid(), connection_num);
+	pthread_join(count_th, NULL);
+	pelog(LOG_NOTICE, "worker %ld: exited gracefully", (long)getpid());
+	return 0;
+}

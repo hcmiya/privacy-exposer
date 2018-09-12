@@ -61,7 +61,7 @@ static void pelog_syslog_th(int priority, char const *fmt, ...) {
 
 void pelog_open(bool use_syslog, int loglevel) {
 	if (use_syslog) {
-		openlog("privacy-exposer", 0, LOG_USER);
+		openlog("privacy-exposer", LOG_PID, LOG_USER);
 		int const tab[] = {
 			LOG_EMERG,  LOG_ALERT,  LOG_CRIT,  LOG_ERR,  LOG_WARNING,  LOG_NOTICE,  LOG_INFO, LOG_DEBUG
 		};

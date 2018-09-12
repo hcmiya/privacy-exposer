@@ -9,7 +9,6 @@
 #include <netdb.h>
 #include <signal.h>
 #include <sys/select.h>
-#include <poll.h>
 #include <errno.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -17,6 +16,9 @@
 #include <syslog.h>
 #include <pthread.h>
 #include <inttypes.h>
+#include <sys/wait.h>
+#include <search.h>
+
 
 #define GLOBAL_MAIN
 #include "privacy-exposer.h"
@@ -28,7 +30,6 @@ static int init(int argc, char **argv) {
 	int c;
 	long loglevel = -1;
 	char *endp;
-	char *rules = NULL;
 	while ((c = getopt(argc, argv, "p:l:r:")) != -1) {
 		switch (c) {
 		case 'p':
@@ -43,7 +44,7 @@ static int init(int argc, char **argv) {
 			}
 			break;
 		case 'r':
-			rules = optarg;
+			rule_path = optarg;
 			break;
 		case '?':
 			exit(1);
@@ -51,16 +52,13 @@ static int init(int argc, char **argv) {
 		}
 	}
 
-	pelog_open(!!pidfile, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
-	if (rules) {
-		FILE *rfp = fopen(rules, "r");
-		if (!rfp) {
-			perror("-r");
-			exit(1);
-		}
-		parse_rules(rfp);
-		fclose(rfp);
+	if (pidfile && rule_path && *rule_path != '/') {
+		fprintf(stderr, "rules file must be specified by full path in daemon mode\n");
+		exit(1);
 	}
+
+	pelog_open(!!pidfile, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
+	load_rules();
 
 	return optind;
 }
@@ -89,14 +87,14 @@ static void daemonize() {
 			exit(1);
 		}
 		close(pp[0]);
-		fprintf(pidfp, "%jd\n", (intmax_t)daemonpid);
+		fprintf(pidfp, "%ld\n", (long)daemonpid);
 		if (fclose(pidfp)) {
 			// ディスクフルとか
 			kill(daemonpid, SIGKILL);
 			pelog(LOG_CRIT, "writing pid: %s: %s", pidfile, strerror(errno));
 			exit(1);
 		}
-		fprintf(stderr, "privacy-exposer: daemonized. %jd\n", (intmax_t)daemonpid);
+		fprintf(stderr, "privacy-exposer: daemonized. %ld\n", (long)daemonpid);
 		_exit(0);
 	}
 
@@ -122,23 +120,69 @@ static void daemonize() {
 	freopen("/dev/null", "w", stderr);
 }
 
-void clean_sock(void *tls_) {
-	struct petls *tls = tls_;
-	shutdown(tls->src, SHUT_RDWR);
-	close(tls->src);
-	if (tls->dest != -1) {
-		shutdown(tls->dest, SHUT_RDWR);
-		close(tls->dest);
-	}
-	pelog(LOG_DEBUG, "%s %s: %dms: clean", tls->id, tls->reqhost, lapse_ms(&tls->btime));
-	free(tls);
+// シグナル処理・プロセス保存関連
+
+static pid_t current_worker;
+static pid_t worker_list[16];
+static size_t worker_num = 0; // 基本的に1つ
+static int pid_pipe[2];
+static volatile bool need_worker;
+static volatile bool need_reload;
+
+static int pid_cmp(void const *l_, void const *r_) {
+	pid_t const *l = l_, *r = r_;
+	return (int)(*l - *r);
 }
 
-void trap(int sig) {
-	bool intr = sig == SIGINT;
-	pelog(LOG_NOTICE, intr ? "interrupted" : "terminated");
-	exit(intr);
+static void kill_worker(void) {
+	for (int i = 0; i < worker_num; i++) {
+		kill(worker_list[i], SIGQUIT);
+	}
 }
+
+static void *count_worker(void *_) {
+	pid_t pid;
+	ssize_t readlen;
+	while (readlen = read(pid_pipe[0], &pid, sizeof(pid))) {
+		if (readlen > 0) {
+			if (pid > 0) {
+				lsearch(&pid, worker_list, &worker_num, sizeof(pid), pid_cmp);
+			}
+			else {
+				pid_t dead = -pid;
+				pid_t *p = lfind(&dead, worker_list, &worker_num, sizeof(dead), pid_cmp);
+				memmove(p, p + 1, (--worker_num - (p - worker_list)) * sizeof(*p));
+				if (!worker_num && !need_worker) {
+					// ワーカーが不意に死んだ?
+					pelog(LOG_CRIT, "all workers died unexpectedly. quitting");
+					exit(1);
+				}
+			}
+		}
+	}
+}
+static void write_worker_pid(pid_t pid) {
+	write(pid_pipe[1], &pid, sizeof(pid));
+}
+
+static volatile int receive_exit_signal;
+static void trap_exit(int sig) {
+	receive_exit_signal = sig;
+}
+
+static void trap_child(int sig) {
+	pid_t dead;
+	while ((dead = waitpid(-1, (int[]){0}, WNOHANG)) > 0) {
+		write_worker_pid(-dead);
+	}
+}
+
+void trap_hup(int sig) {
+	signal(SIGHUP, SIG_DFL);
+	need_reload = true;
+}
+
+// シグナル処理・プロセス保存関連ここまで
 
 int main(int argc, char **argv) {
 	int argstart = init(argc, argv);
@@ -188,8 +232,8 @@ int main(int argc, char **argv) {
 				close(poll_list[bind_num].fd);
 			}
 			else {
+				setsockopt(poll_list[bind_num].fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
 				poll_list[bind_num].events = POLLIN;
-				poll_list[bind_num].revents = 0;
 				pelog(LOG_NOTICE, "listen: %s", addr);
 				bind_num++;
 			}
@@ -204,53 +248,83 @@ int main(int argc, char **argv) {
 	if (pidfile) {
 		daemonize();
 	}
+	pelog(LOG_INFO, "root process: %ld", (long)getpid());
 
-	struct sigaction sa = {
-		.sa_handler = trap,
-	};
+	// ここからシグナルを全部ブロックしておいて、fork()した後でsigsuspend()する
+	sigset_t sig_block_all, sig_waiting;
+	sigfillset(&sig_block_all);
+	sigprocmask(SIG_BLOCK, &sig_block_all, &sig_waiting);
+
+	struct sigaction sa = {0};
 	sigfillset(&sa.sa_mask);
-	sigaction(SIGTERM, &sa, NULL);
-	sigaction(SIGQUIT, &sa, NULL);
+	sa.sa_handler = trap_child;
+	sigaction(SIGCHLD, &sa, NULL);
+
+	sa.sa_handler = trap_exit;
 	sigaction(SIGINT, &sa, NULL);
+	sigaction(SIGQUIT, &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
 
-	pthread_attr_t pattr;
-	pthread_attr_init(&pattr);
-	pthread_attr_setdetachstate(&pattr, PTHREAD_CREATE_DETACHED);
+	// 終了時にワーカープロセスにもシグナルを飛ばせるようにPIDを保存しておくやつ
+	pipe(pid_pipe);
+	pthread_t counter_th;
+	pthread_create(&counter_th, NULL, count_worker, NULL);
 
-	pthread_key_create(&sock_cleaner, clean_sock);
+	atexit(kill_worker);
 
-	int thread_id = 1;
-	for (int live = bind_num; live;) {
-		int poll_ret = poll(poll_list, bind_num, -1);
-		if (poll_ret < 0) {
-			pelog(LOG_CRIT, "poll(): %s", strerror(errno));
-			return 1;
+	need_worker = true;
+	while (1) {
+		if (need_worker) {
+			pid_t pid = fork();
+			switch (pid) {
+			case -1:
+				pelog(LOG_CRIT, "fork()", strerror(errno));
+				return 1;
+			case 0:
+				// socks.cへ
+				return do_accept(poll_list, bind_num);
+			default:
+				break;
+			}
+			current_worker = pid;
+			pelog(LOG_NOTICE, "current worker: %ld", (long)pid);
+			write_worker_pid(pid);
+			need_worker = false;
+			sa.sa_handler = trap_hup;
+			sigaction(SIGHUP, &sa, NULL);
 		}
 
-		for (int i = 0; i < bind_num && poll_ret; i++) {
-			if (poll_list[i].revents & POLLIN) {
-				poll_ret--;
-				int confd = accept(poll_list[i].fd, NULL, NULL);
-				if (confd < 0) {
-					pelog(LOG_ERR, "accept(): %s", strerror(errno));
-					continue;
-				}
-				struct petls *tls = calloc(1, sizeof(*tls));
-				tls->src = confd;
-				tls->dest = -1;
-				sprintf(tls->id, "%08"PRIX32, thread_id++);
-				strcpy(tls->reqhost, "(?)");
-				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
+		sigsuspend(&sig_waiting);
+		if (need_reload) {
+			// SIGHUPを受信したのでルールを再読込する。
+			// ワーカーの接続は維持される
+			need_worker = true;
+			kill(current_worker, SIGHUP);
+			pelog(LOG_NOTICE, "reloading rules");
+			delete_rules();
+			load_rules();
+			need_reload = false;
+		}
+		else if (receive_exit_signal) {
+			// INT, QUIT, TERM
+			bool intr = receive_exit_signal == SIGINT;
+			char const *msg;
+			switch (receive_exit_signal) {
+			case SIGINT:
+				msg = "interrupted";
+				break;
+			case SIGQUIT:
+				msg = "quitting";
+				break;
+			case SIGTERM:
+				msg = "terminating";
+				break;
 			}
-			else if (poll_list[i].revents) {
-				pelog(LOG_ERR, "accept() (from poll())");
-				poll_ret--;
-				poll_list[i].fd = ~poll_list[i].fd;
-				live--;
-			}
+			pelog(LOG_NOTICE, "%s. send workers quit signal", msg);
+			close(pid_pipe[1]);
+			pthread_join(counter_th, NULL);
+			return intr;
 		}
 	}
-
-	pelog(LOG_CRIT, "no listening sockets. aborted");
-	return 1;
+	return 0;
 }

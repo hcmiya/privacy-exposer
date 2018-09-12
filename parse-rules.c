@@ -314,3 +314,48 @@ void parse_rules(FILE *fp) {
 	}
 	rule_list = rule_begin.next;
 }
+
+void delete_rules(void) {
+	while (rule_list) {
+		switch (rule_list->type) {
+		case rule_host:
+			free(rule_list->u.host.name);
+			free(rule_list->u.host.ports);
+			break;
+		case rule_net4:
+			free(rule_list->u.net4.ports);
+			break;
+		case rule_net6:
+			free(rule_list->u.net6.ports);
+			break;
+		}
+		for (struct proxy *p = rule_list->proxy; p && p->type != proxy_type_deny; ) {
+			switch (p->type) {
+			case proxy_type_socks5:
+			case proxy_type_http_connect:
+				free(p->u.host_port.name);
+				break;
+			case proxy_type_unix_socks5:
+				free(p->u.path);
+				break;
+			}
+			struct proxy *np = p->next;
+			free(p);
+			p = np;
+		}
+		struct rule *nr = rule_list->next;
+		free(rule_list);
+		rule_list = nr;
+	}
+}
+
+void load_rules(void) {
+	if (!rule_path) return;
+	FILE *rfp = fopen(rule_path, "r");
+	if (!rfp) {
+		perror("-r");
+		exit(1);
+	}
+	parse_rules(rfp);
+	fclose(rfp);
+}

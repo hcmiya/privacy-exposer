@@ -1,3 +1,6 @@
+#include <poll.h>
+#include <stdint.h>
+
 struct petls {
 	char reqhost[262], id[9];
 	int src, dest;
@@ -16,6 +19,18 @@ struct rule {
 			uint16_t *ports;
 			size_t port_num;
 		} host;
+		struct {
+			uint8_t addr[4];
+			uint8_t cidr;
+			uint16_t *ports;
+			size_t port_num;
+		} net4;
+		struct {
+			uint8_t addr[16];
+			uint8_t cidr;
+			uint16_t *ports;
+			size_t port_num;
+		} net6;
 	} u;
 	struct proxy {
 		enum {
@@ -38,7 +53,7 @@ struct rule {
 };
 
 // socks.c
-void *do_socks(void *sockpair);
+int do_accept(struct pollfd *pfd, size_t bind_num);
 
 // common.c
 int retrieve_sock_info(
@@ -56,4 +71,5 @@ bool simple_host_check(char const *host);
 void pelog_open(bool use_syslog, int loglevel);
 
 // parse-rules.c
-void parse_rules(FILE *fp);
+void load_rules(void);
+void delete_rules(void);
