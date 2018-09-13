@@ -669,7 +669,7 @@ void *do_socks(void *tls_) {
 	pthread_setspecific(sock_cleaner, tls);
 	int src = tls->src;
 
-	char accept_local[40], accept_remote[40];
+	char accept_local[64], accept_remote[64];
 	uint16_t port_local, port_remote;
 	retrieve_sock_info(false, src, accept_local, NULL, &port_local);
 	retrieve_sock_info(true, src, accept_remote, NULL, &port_remote);
@@ -777,7 +777,7 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 			}
 		}
 	}
-	pelog(LOG_NOTICE, "received sighup. waiting for %zu connections", connection_num);
+	pelog(LOG_NOTICE, "received SIGHUP. %zu connections are retained until close", connection_num);
 	pthread_join(count_th, NULL);
 	pelog(LOG_NOTICE, "exited gracefully");
 	return 0;

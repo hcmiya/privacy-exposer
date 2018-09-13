@@ -122,8 +122,9 @@ static void daemonize() {
 
 // シグナル処理・プロセス保存関連
 
+static pid_t root_process;
 static pid_t current_worker;
-static pid_t worker_list[16];
+static pid_t worker_list[128]; // 一応大量に取っておく
 static size_t worker_num = 0; // 基本的に1つ
 static int pid_pipe[2];
 static volatile bool need_worker;
@@ -135,6 +136,7 @@ static int pid_cmp(void const *l_, void const *r_) {
 }
 
 static void kill_worker(void) {
+	if (getpid() != root_process) return;
 	for (int i = 0; i < worker_num; i++) {
 		kill(worker_list[i], SIGQUIT);
 	}
@@ -248,7 +250,8 @@ int main(int argc, char **argv) {
 	if (pidfile) {
 		daemonize();
 	}
-	pelog(LOG_INFO, "root process: %ld", (long)getpid());
+	root_process = getpid();
+	pelog(LOG_INFO, "root process: %ld", (long)root_process);
 
 	// ここからシグナルを全部ブロックしておいて、fork()した後でsigsuspend()する
 	sigset_t sig_block_all, sig_waiting;
@@ -282,7 +285,7 @@ int main(int argc, char **argv) {
 				return 1;
 			case 0:
 				// socks.cへ
-				return do_accept(poll_list, bind_num);
+				exit(do_accept(poll_list, bind_num));
 			default:
 				break;
 			}
@@ -300,7 +303,7 @@ int main(int argc, char **argv) {
 			// ワーカーの接続は維持される
 			need_worker = true;
 			kill(current_worker, SIGHUP);
-			pelog(LOG_NOTICE, "reloading rules");
+			pelog(LOG_NOTICE, "received SIGHUP. reloading rules");
 			delete_rules();
 			load_rules();
 			need_reload = false;
@@ -320,7 +323,7 @@ int main(int argc, char **argv) {
 				msg = "terminating";
 				break;
 			}
-			pelog(LOG_NOTICE, "%s. send workers quit signal", msg);
+			pelog(LOG_NOTICE, "%s. send workers SIGQUIT", msg);
 			close(pid_pipe[1]);
 			pthread_join(counter_th, NULL);
 			return intr;
