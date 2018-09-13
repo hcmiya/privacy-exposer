@@ -560,7 +560,7 @@ static int parse_header(struct petls *tls) {
 	// 宛先に応じたプロクシを選択
 	struct rule *rule = match_rule(destname, port);
 	if (rule && rule->proxy && rule->proxy->type == proxy_type_deny) {
-		pelog_th(LOG_INFO, "refused by rules");
+		pelog_th(LOG_INFO, "refused by rule set #%zu", rule->idx);
 		uint8_t *p = buf;
 		memcpy(p, "\x5\x2\x0", 3);
 		memcpy(p += 3, destbin, destlen);

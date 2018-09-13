@@ -197,6 +197,7 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 	else {
 		error("invalid domain name: %s", host);
 	}
+
 	char *port = *fields++;
 	if (port && *port == '#') {
 		port++;
@@ -205,6 +206,7 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 	else port = NULL;
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
+
 	rule_cur->next = calloc(1, sizeof(*rule_cur));
 	rule_cur = rule_cur->next;
 	rule_cur->type = type;
@@ -221,6 +223,86 @@ static size_t parse_rule_all(char **unused, size_t fieldnum, char const *name, i
 	return 0;
 }
 
+static uint8_t parse_cidr(char const *str, int max) {
+	int_fast16_t cidr = 0;
+	int i;
+	for (i = 0; isdigit(str[i]) && i < 3; i++) {
+		cidr *= 10;
+		cidr += str[i] - '0';
+	}
+	if (i == 0 || str[i] != '\0' || str[0] == '0' && str[1] != '\0' || cidr > max) {
+		error("invalid cidr: /%s", str);
+	}
+	return cidr;
+}
+
+static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, int type) {
+	if (fieldnum < 1) {
+		error("no arguments for %s", name);
+	}
+
+	size_t fieldnum_sav = fieldnum;
+	uint8_t addr[16] = "";
+	uint8_t cidr;
+	uint8_t addrlen;
+	int addrtype;
+	uint8_t cidrmax;
+	char const *protoname;
+
+	switch (type) {
+	case rule_net4:
+		cidrmax = 32;
+		addrtype = AF_INET;
+		addrlen = 4;
+		protoname = "ipv4";
+		break;
+	case rule_net6:
+		cidrmax = 128;
+		addrtype = AF_INET6;
+		addrlen = 16;
+		protoname = "ipv6";
+		break;
+	}
+
+	if (**fields == '#') {
+		cidr = 0;
+	}
+	else {
+		char *straddr = *fields++;
+		fieldnum--;
+		char *strcidr = strchr(straddr, '/');
+		if (strcidr) *strcidr++ = '\0';
+		if (!inet_pton(addrtype, straddr, addr)) {
+			error("invalid %s address: %s", protoname, straddr);
+		}
+		if (strcidr) {
+			cidr = parse_cidr(strcidr, cidrmax);
+		}
+		else {
+			cidr = cidrmax;
+		}
+	}
+
+	char *port = *fields;
+	if (port && *port++ == '#') {
+		fields++;
+		fieldnum--;
+	}
+	else port = NULL;
+	uint16_t *port_list;
+	size_t port_num = parse_port(port, &port_list);
+
+	rule_cur->next = calloc(1, sizeof(*rule_cur));
+	rule_cur = rule_cur->next;
+	rule_cur->type = type;
+	memcpy(rule_cur->u.net.addr, addr, addrlen);
+	rule_cur->u.net.cidr = cidr;
+	rule_cur->ports = port_list;
+	rule_cur->port_num = port_num;
+
+	return fieldnum_sav - fieldnum;
+}
+
 static void parse_fields(char **fields, size_t fieldnum) {
 	static struct {
 		char const *name;
@@ -230,8 +312,8 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		{ "all", parse_rule_all, rule_all },
 		{ "host", parse_rule_host, rule_host },
 		{ "domain", parse_rule_host, rule_domain },
-		// { "net4", parse_rule_net4 },
-		// { "net6", parse_rule_net6 },
+		{ "net4", parse_rule_net, rule_net4 },
+		{ "net6", parse_rule_net, rule_net6 },
 		{ NULL, NULL, 0 },
 	};
 	size_t i, adv;
@@ -274,6 +356,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		fields += adv;
 		fieldnum -= adv;
 	}
+	rule_cur->idx = lineno;
 	rule_cur->proxy = proxy_begin.next;
 }
 
@@ -281,7 +364,7 @@ void parse_rules(FILE *fp) {
 	rule_cur = &rule_begin;
 	size_t const buflen = 1024;
 	char line[buflen];
-	while (fgets(line, buflen, fp)) {
+	for (; fgets(line, buflen, fp); lineno++) {
 		size_t linelen = strlen(line);
 		if (linelen == buflen - 1 && line[linelen - 1] != '\n') {
 			exit(2);
@@ -400,15 +483,41 @@ struct rule *match_rule(char const *host, uint16_t port) {
 				}
 			}
 			break;
-// 		case rule_net4:
-// 			{
-// 			}
-// 			break;
-// 		case rule_net6:
-// 			{
-// 			}
-// 			break;
+		case rule_net4:
+		case rule_net6:
+			{
+				uint8_t addr[16];
+				int addrtype;
+				socklen_t addrlen;
+				switch (rule->type) {
+				case rule_net4:
+					addrtype = AF_INET;
+					addrlen = 4;
+					break;
+				case rule_net6:
+					addrtype = AF_INET6;
+					addrlen = 16;
+					break;
+				}
+				pelog(LOG_DEBUG, "net in %s testcidr %d", host, rule->u.net.cidr);
+				if (!inet_pton(addrtype, host, addr)) {
+					break;
+				}
+				pelog(LOG_DEBUG, "net parse success");
+				uint8_t *target = addr, *test = rule->u.net.addr;
+				int mask = rule->u.net.cidr;
+
+				while (mask >= 8) {
+					if (*target++ != *test++) goto NEXT_RULE;
+					mask -= 8;
+				}
+				int left = 8 - mask;
+				if (mask && (*target >> left) != (*test >> left)) goto NEXT_RULE;
+				if (match_port(port, rule->ports, rule->port_num)) return rule;
+			}
+			break;
 		}
+	NEXT_RULE:
 		rule = rule->next;
 	}
 	return NULL;

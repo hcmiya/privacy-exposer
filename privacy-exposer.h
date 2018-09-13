@@ -8,6 +8,7 @@ struct petls {
 };
 
 struct rule {
+	size_t idx;
 	enum {
 		rule_all,
 		rule_host,
@@ -20,13 +21,9 @@ struct rule {
 			char *name;
 		} host;
 		struct {
-			uint8_t addr[4];
 			uint8_t cidr;
-		} net4;
-		struct {
 			uint8_t addr[16];
-			uint8_t cidr;
-		} net6;
+		} net;
 	} u;
 	uint16_t *ports;
 	size_t port_num;
