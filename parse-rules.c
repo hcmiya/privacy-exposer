@@ -181,9 +181,9 @@ static size_t parse_port(char *strport, uint16_t **portlist) {
 	return parsed;
 }
 
-static size_t parse_rule_host(char **fields, size_t fieldnum) {
+static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, int type) {
 	if (fieldnum < 1) {
-		error("no arguments for host");
+		error("no arguments for %s", name);
 	}
 	size_t rtn = 0;
 	char *host = *fields;
@@ -207,35 +207,37 @@ static size_t parse_rule_host(char **fields, size_t fieldnum) {
 	size_t port_num = parse_port(port, &port_list);
 	rule_cur->next = calloc(1, sizeof(*rule_cur));
 	rule_cur = rule_cur->next;
-	rule_cur->type = rule_host;
+	rule_cur->type = type;
 	rule_cur->u.host.name = strdup(host);
-	rule_cur->u.host.ports = port_list;
-	rule_cur->u.host.port_num = port_num;
+	rule_cur->ports = port_list;
+	rule_cur->port_num = port_num;
 	return rtn;
 }
 
-static size_t parse_rule_all(char **unused, size_t fieldnum) {
-	if (fieldnum == 0) return 0;
-	char tmp[] = "#";
-	parse_rule_host((char*[]){ tmp, NULL }, 1);
+static size_t parse_rule_all(char **unused, size_t fieldnum, char const *name, int type) {
+	rule_cur->next = calloc(1, sizeof(*rule_cur));
+	rule_cur->type = type;
+	rule_cur = rule_cur->next;
 	return 0;
 }
 
 static void parse_fields(char **fields, size_t fieldnum) {
 	static struct {
 		char const *name;
-		size_t (*parser)(char **, size_t);
+		size_t (*parser)(char **, size_t, char const *, int);
+		int type;
 	} const match_table[] = {
-		{ "all", parse_rule_all },
-		{ "host", parse_rule_host },
+		{ "all", parse_rule_all, rule_all },
+		{ "host", parse_rule_host, rule_host },
+		{ "domain", parse_rule_host, rule_domain },
 		// { "net4", parse_rule_net4 },
 		// { "net6", parse_rule_net6 },
-		{ NULL, NULL },
+		{ NULL, NULL, 0 },
 	};
 	size_t i, adv;
 	for (i = 0; match_table[i].name; i++) {
 		if (strcmp(*fields, match_table[i].name) == 0) {
-			adv = match_table[i].parser(++fields, --fieldnum);
+			adv = match_table[i].parser(++fields, --fieldnum, match_table[i].name, match_table[i].type);
 			break;
 		}
 	}
@@ -244,9 +246,6 @@ static void parse_fields(char **fields, size_t fieldnum) {
 	}
 	fields += adv;
 	fieldnum -= adv;
-	if (i == 0 && fieldnum == 0) { // "all", no proxy
-		return;
-	}
 
 	static struct {
 		char *name;
@@ -320,15 +319,13 @@ void delete_rules(void) {
 		switch (rule_list->type) {
 		case rule_host:
 			free(rule_list->u.host.name);
-			free(rule_list->u.host.ports);
 			break;
 		case rule_net4:
-			free(rule_list->u.net4.ports);
 			break;
 		case rule_net6:
-			free(rule_list->u.net6.ports);
 			break;
 		}
+		free(rule_list->ports);
 		for (struct proxy *p = rule_list->proxy; p && p->type != proxy_type_deny; ) {
 			switch (p->type) {
 			case proxy_type_socks5:
@@ -358,4 +355,61 @@ void load_rules(void) {
 	}
 	parse_rules(rfp);
 	fclose(rfp);
+}
+
+static bool match_port(uint16_t port, uint16_t *ports, size_t num) {
+	for (int i = 0; i < num; i += 2) {
+		if (port >= ports[i] && port <= ports[i + 1]) return true;
+	}
+	return false;
+}
+
+struct rule *match_rule(char const *host, uint16_t port) {
+	struct rule *rule = rule_list;
+
+	while (rule) {
+		bool rule_matched = false;
+		switch (rule->type) {
+		case rule_all:
+			return rule;
+		case rule_host:
+		case rule_domain:
+			{
+				bool host_matched = false;
+				char const *needle = rule->u.host.name;
+				if (!*needle) {
+					host_matched = true;
+				}
+				else if (*needle == '.') {
+					host_matched = end_with(host, needle);
+				}
+				else switch (rule->type) {
+				case rule_host:
+					host_matched = strcmp(host, needle) == 0;
+					break;
+				case rule_domain:
+					if (end_with(host, needle)) {
+						size_t hostlen = strlen(host);
+						size_t needlelen = strlen(needle);
+						host_matched = hostlen == needlelen || host[hostlen - needlelen - 1] == '.';
+					}
+					break;
+				}
+				if (host_matched) {
+					if (match_port(port, rule->ports, rule->port_num)) return rule;
+				}
+			}
+			break;
+// 		case rule_net4:
+// 			{
+// 			}
+// 			break;
+// 		case rule_net6:
+// 			{
+// 			}
+// 			break;
+		}
+		rule = rule->next;
+	}
+	return NULL;
 }

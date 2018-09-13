@@ -9,29 +9,27 @@ struct petls {
 
 struct rule {
 	enum {
+		rule_all,
 		rule_host,
+		rule_domain,
 		rule_net4,
 		rule_net6,
 	} type;
 	union {
 		struct {
 			char *name;
-			uint16_t *ports;
-			size_t port_num;
 		} host;
 		struct {
 			uint8_t addr[4];
 			uint8_t cidr;
-			uint16_t *ports;
-			size_t port_num;
 		} net4;
 		struct {
 			uint8_t addr[16];
 			uint8_t cidr;
-			uint16_t *ports;
-			size_t port_num;
 		} net6;
 	} u;
+	uint16_t *ports;
+	size_t port_num;
 	struct proxy {
 		enum {
 			proxy_type_deny,
@@ -73,3 +71,4 @@ void pelog_open(bool use_syslog, int loglevel);
 // parse-rules.c
 void load_rules(void);
 void delete_rules(void);
+struct rule *match_rule(char const *host, uint16_t port);

@@ -139,46 +139,6 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static struct rule *match_rule(char const *host, uint16_t port) {
-	struct rule *rule = rule_list;
-
-	while (rule) {
-		bool rule_matched = false;
-		switch (rule->type) {
-		case rule_host:
-			{
-				bool host_matched = false;
-				if (!*rule->u.host.name) {
-					host_matched = true;
-				}
-				else if (*rule->u.host.name == '.') {
-					host_matched = end_with(host, rule->u.host.name);
-				}
-				else {
-					host_matched = strcmp(host, rule->u.host.name) == 0;
-				}
-				if (host_matched) {
-					uint16_t *ports = rule->u.host.ports;
-					for (int i = 0; i < rule->u.host.port_num; i += 2) {
-						if (port >= ports[i] && port <= ports[i + 1]) return rule;
-					}
-				}
-			}
-			break;
-// 		case rule_net4:
-// 			{
-// 			}
-// 			break;
-// 		case rule_net6:
-// 			{
-// 			}
-// 			break;
-		}
-		rule = rule->next;
-	}
-	return NULL;
-}
-
 static void next_socks5(struct petls *tls, char const *host, char const *port, int upstream) {
 	uint8_t buf[262];
 	if (strlen(host) > 255) {
@@ -228,11 +188,10 @@ static void next_socks5(struct petls *tls, char const *host, char const *port, i
 }
 
 static ssize_t http_peek(int upstream, void *buf, size_t len) {
-	int const timeout =
 #ifdef NDEBUG
-		20
+	int const timeout = 20
 #else
-		-1
+	int const timeout = -1
 #endif
 	;
 	struct pollfd pfd = {
@@ -517,6 +476,7 @@ static int parse_header(struct petls *tls) {
 	read_header(src, buf, 2, timeout_greet, true);
 	// [0]: プロトコルバージョン
 	if (buf[0] != 5) {
+		pelog_th(LOG_DEBUG, "not a socks 5 request");
 		fail(-1);
 	}
 
@@ -529,6 +489,7 @@ static int parse_header(struct petls *tls) {
 	}
 	if (i == authnum) {
 		// 「認証無し」が含まれていなかった
+		pelog_th(LOG_DEBUG, "auth methods not acceptable");
 		fail(0);
 	}
 
@@ -539,10 +500,12 @@ static int parse_header(struct petls *tls) {
 	read_header(src, buf, 4, timeout_read_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
 	if (buf[0] != 5 || buf[2] != 0) {
+		pelog_th(LOG_DEBUG, "broken header");
 		fail(1);
 	}
 	if (buf[1] != 1) {
 		// connect(tcp)でない
+		pelog_th(LOG_DEBUG, "not a CONNECT request");
 		fail(7);
 	}
 
