@@ -102,8 +102,8 @@ static size_t parse_proxy_deny(char **fields, size_t fieldnum, char *name, int t
 	if (fieldnum > 0) {
 		error("too many arguments for deny");
 	}
-	static struct proxy deny = { .type = proxy_type_deny };
-	proxy_cur->next = &deny;
+	static struct proxy const deny = { .type = proxy_type_deny };
+	proxy_cur->next = (struct proxy*)&deny;
 	return 0;
 }
 
@@ -379,7 +379,7 @@ void parse_rules(FILE *fp) {
 	rule_cur = &rule_begin;
 	size_t const buflen = 1024;
 	char line[buflen];
-	for (; fgets(line, buflen, fp); lineno++) {
+	for (lineno = 1; fgets(line, buflen, fp); lineno++) {
 		size_t linelen = strlen(line);
 		if (linelen == buflen - 1 && line[linelen - 1] != '\n') {
 			exit(2);
@@ -427,11 +427,15 @@ void delete_rules(void) {
 	while (r) {
 		switch (r->type) {
 		case rule_host:
+		case rule_domain:
 			free(r->u.host.name);
 			break;
 		}
 		free(r->ports);
-		for (struct proxy *p = r->proxy; p && p->type != proxy_type_deny; ) {
+
+		// denyは静的領域を指しているのでfreeしないこと
+		struct proxy *p = proxy_begin.next;
+		if (p && p->type != proxy_type_deny) while (p) {
 			switch (p->type) {
 			case proxy_type_socks5:
 			case proxy_type_http_connect:
@@ -441,13 +445,14 @@ void delete_rules(void) {
 				free(p->u.path);
 				break;
 			}
-			struct proxy *np = p->next;
-			free(p);
-			p = np;
+			p = p->next;
+			free(proxy_begin.next);
+			proxy_begin.next = p;
 		}
-		struct rule *nr = r->next;
-		free(r);
-		r = nr;
+
+		r = r->next;
+		free(rule_begin.next);
+		rule_begin.next = r;
 	}
 	free(rule_resolve_list);
 	rule_resolve_list = NULL;
