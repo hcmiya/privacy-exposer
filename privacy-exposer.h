@@ -75,3 +75,6 @@ void delete_rules(void);
 struct rule *match_rule(char const *host, uint16_t port);
 size_t test_net_num(struct rule *rule);
 struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target);
+
+// worker.c
+int worker_loop(struct pollfd *poll_list, int bind_num);

@@ -1,6 +1,6 @@
 CFLAGS+=-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_BSD_SOURCE
 LDFLAGS+=-lpthread
-SRCS=main.c common.c socks.c logger.c parse-rules.c
+SRCS=main.c common.c socks.c logger.c parse-rules.c worker.c
 OBJS=$(SRCS:.c=.o)
 HEADERS=privacy-exposer.h global.h
 
