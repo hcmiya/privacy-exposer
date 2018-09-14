@@ -25,7 +25,8 @@
 
 static size_t lineno = 1;
 
-static struct rule rule_begin, *rule_cur;
+static struct rule rule_begin, *rule_cur, **rule_resolve_list;
+static size_t rule_resolve_num;
 static struct proxy proxy_begin, *proxy_cur;
 
 static void error(char const *fmt, ...) {
@@ -207,8 +208,7 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
-	rule_cur->next = calloc(1, sizeof(*rule_cur));
-	rule_cur = rule_cur->next;
+	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
 	rule_cur->type = type;
 	rule_cur->u.host.name = strdup(host);
 	rule_cur->ports = port_list;
@@ -251,12 +251,14 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 
 	switch (type) {
 	case rule_net4:
+	case rule_net4_resolve:
 		cidrmax = 32;
 		addrtype = AF_INET;
 		addrlen = 4;
 		protoname = "ipv4";
 		break;
 	case rule_net6:
+	case rule_net6_resolve:
 		cidrmax = 128;
 		addrtype = AF_INET6;
 		addrlen = 16;
@@ -292,9 +294,9 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
-	rule_cur->next = calloc(1, sizeof(*rule_cur));
-	rule_cur = rule_cur->next;
+	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
 	rule_cur->type = type;
+	rule_cur->u.net.af = addrtype;
 	memcpy(rule_cur->u.net.addr, addr, addrlen);
 	rule_cur->u.net.cidr = cidr;
 	rule_cur->ports = port_list;
@@ -304,36 +306,42 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 }
 
 static void parse_fields(char **fields, size_t fieldnum) {
-	static struct {
+	struct match_table_ {
 		char const *name;
 		size_t (*parser)(char **, size_t, char const *, int);
 		int type;
-	} const match_table[] = {
+	};
+	static struct match_table_ const match_table[] = {
 		{ "all", parse_rule_all, rule_all },
 		{ "host", parse_rule_host, rule_host },
 		{ "domain", parse_rule_host, rule_domain },
 		{ "net4", parse_rule_net, rule_net4 },
 		{ "net6", parse_rule_net, rule_net6 },
+		{ "net4-resolve", parse_rule_net, rule_net4_resolve },
+		{ "net6-resolve", parse_rule_net, rule_net6_resolve },
 		{ NULL, NULL, 0 },
 	};
+	struct match_table_ const *mtp = match_table;
 	size_t i, adv;
-	for (i = 0; match_table[i].name; i++) {
-		if (strcmp(*fields, match_table[i].name) == 0) {
-			adv = match_table[i].parser(++fields, --fieldnum, match_table[i].name, match_table[i].type);
+	int rule_type;
+	for (mtp = match_table; mtp->name; mtp++) {
+		if (strcmp(*fields, mtp->name) == 0) {
+			adv = mtp->parser(++fields, --fieldnum, mtp->name, mtp->type);
 			break;
 		}
 	}
-	if (!match_table[i].name) {
+	if (!mtp->name) {
 		error("unknown matcher directive: %s", *fields);
 	}
 	fields += adv;
 	fieldnum -= adv;
 
-	static struct {
+	struct proxy_table_ {
 		char *name;
 		int type;
 		size_t (*parser)(char **, size_t, char *, int);
-	} const proxy_table[] = {
+	};
+	static struct proxy_table_ const proxy_table[] = {
 		{ "deny", proxy_type_deny, parse_proxy_deny },
 		{ "socks5", proxy_type_socks5, parse_proxy_hostname },
 		// { "socks4a", proxy_type_socks4a, parse_proxy_socks4a },
@@ -344,17 +352,24 @@ static void parse_fields(char **fields, size_t fieldnum) {
 	proxy_cur = &proxy_begin;
 	proxy_cur->next = NULL;
 	while (*fields) {
-		for (i = 0; proxy_table[i].name; i++) {
-			if (strcmp(*fields, proxy_table[i].name) == 0) {
-				adv = proxy_table[i].parser(++fields, --fieldnum, proxy_table[i].name, proxy_table[i].type);
+		struct proxy_table_ const *ptp;
+		for (ptp = proxy_table; ptp->name; ptp++) {
+			if (strcmp(*fields, ptp->name) == 0) {
+				adv = ptp->parser(++fields, --fieldnum, ptp->name, ptp->type);
 				break;
 			}
 		}
-		if (!proxy_table[i].name) {
+		if (!ptp->name) {
 			error("unknown proxy directive: %s", *fields);
 		}
 		fields += adv;
 		fieldnum -= adv;
+	}
+	switch (mtp->type) {
+	case rule_net4_resolve:
+	case rule_net6_resolve:
+		rule_resolve_num++;
+		break;
 	}
 	rule_cur->idx = lineno;
 	rule_cur->proxy = proxy_begin.next;
@@ -369,6 +384,7 @@ void parse_rules(FILE *fp) {
 		if (linelen == buflen - 1 && line[linelen - 1] != '\n') {
 			exit(2);
 		}
+
 		char *p = strchr(line, ';');
 		if (p) *p = '\0';
 
@@ -394,22 +410,28 @@ void parse_rules(FILE *fp) {
 		fields[fieldnum] = NULL;
 		parse_fields(fields, fieldnum);
 	}
-	rule_list = rule_begin.next;
+	rule_resolve_list = calloc(rule_resolve_num + 1, sizeof(*rule_resolve_list));
+	size_t i = 0;
+	for (rule_cur = rule_begin.next; i < rule_resolve_num; rule_cur = rule_cur->next) {
+		switch (rule_cur->type) {
+		case rule_net4_resolve:
+		case rule_net6_resolve:
+			rule_resolve_list[i++] = rule_cur;
+			break;
+		}
+	}
 }
 
 void delete_rules(void) {
-	while (rule_list) {
-		switch (rule_list->type) {
+	struct rule *r = rule_begin.next;
+	while (r) {
+		switch (r->type) {
 		case rule_host:
-			free(rule_list->u.host.name);
-			break;
-		case rule_net4:
-			break;
-		case rule_net6:
+			free(r->u.host.name);
 			break;
 		}
-		free(rule_list->ports);
-		for (struct proxy *p = rule_list->proxy; p && p->type != proxy_type_deny; ) {
+		free(r->ports);
+		for (struct proxy *p = r->proxy; p && p->type != proxy_type_deny; ) {
 			switch (p->type) {
 			case proxy_type_socks5:
 			case proxy_type_http_connect:
@@ -423,15 +445,17 @@ void delete_rules(void) {
 			free(p);
 			p = np;
 		}
-		struct rule *nr = rule_list->next;
-		free(rule_list);
-		rule_list = nr;
+		struct rule *nr = r->next;
+		free(r);
+		r = nr;
 	}
+	free(rule_resolve_list);
+	rule_resolve_list = NULL;
 }
 
 void load_rules(void) {
-	if (!rule_path) return;
-	FILE *rfp = fopen(rule_path, "r");
+	if (!rule_file_path) return;
+	FILE *rfp = fopen(rule_file_path, "r");
 	if (!rfp) {
 		perror("-r");
 		exit(1);
@@ -447,8 +471,18 @@ static bool match_port(uint16_t port, uint16_t *ports, size_t num) {
 	return false;
 }
 
+static bool match_net(int addrtype, void *target_, void *test_, uint8_t cidr) {
+	uint8_t *target = target_, *test = test_;
+	while (cidr >= 8) {
+		if (*target++ != *test++) return false;
+		cidr -= 8;
+	}
+	int left = 8 - cidr;
+	return !cidr || (*target >> left) == (*test >> left);
+}
+
 struct rule *match_rule(char const *host, uint16_t port) {
-	struct rule *rule = rule_list;
+	struct rule *rule = rule_begin.next;
 
 	while (rule) {
 		bool rule_matched = false;
@@ -485,40 +519,75 @@ struct rule *match_rule(char const *host, uint16_t port) {
 			break;
 		case rule_net4:
 		case rule_net6:
+		case rule_net4_resolve:
+		case rule_net6_resolve:
 			{
 				uint8_t addr[16];
 				int addrtype;
 				socklen_t addrlen;
 				switch (rule->type) {
 				case rule_net4:
+				case rule_net4_resolve:
 					addrtype = AF_INET;
 					addrlen = 4;
 					break;
 				case rule_net6:
+				case rule_net6_resolve:
 					addrtype = AF_INET6;
 					addrlen = 16;
 					break;
 				}
-				pelog(LOG_DEBUG, "net in %s testcidr %d", host, rule->u.net.cidr);
 				if (!inet_pton(addrtype, host, addr)) {
 					break;
 				}
-				pelog(LOG_DEBUG, "net parse success");
-				uint8_t *target = addr, *test = rule->u.net.addr;
-				int mask = rule->u.net.cidr;
-
-				while (mask >= 8) {
-					if (*target++ != *test++) goto NEXT_RULE;
-					mask -= 8;
-				}
-				int left = 8 - mask;
-				if (mask && (*target >> left) != (*test >> left)) goto NEXT_RULE;
-				if (match_port(port, rule->ports, rule->port_num)) return rule;
+				if (match_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr) && match_port(port, rule->ports, rule->port_num)) return rule;
 			}
 			break;
 		}
 	NEXT_RULE:
 		rule = rule->next;
+	}
+	return NULL;
+}
+
+size_t test_net_num(struct rule *rule) {
+	// rule に至るまでnet?-resolveをこなすべき数
+	if (!rule) return rule_resolve_num;
+	size_t num = 0;
+	struct rule **r = rule_resolve_list;
+	while ((*r) && (*r)->idx < rule->idx) {
+		switch ((*r)->type) {
+		case rule_net4_resolve:
+		case rule_net6_resolve:
+			num++;
+			break;
+		}
+		r++;
+	}
+	return num;
+}
+
+struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target) {
+	uint8_t *addr;
+	uint16_t port;
+	switch (target->sa_family) {
+	case AF_INET:
+		addr = (uint8_t*)&((struct sockaddr_in*)target)->sin_addr;
+		port = ntohs(((struct sockaddr_in*)target)->sin_port);
+		break;
+	case AF_INET6:
+		addr = (uint8_t*)&((struct sockaddr_in6*)target)->sin6_addr;
+		port = ntohs(((struct sockaddr_in6*)target)->sin6_port);
+		break;
+	}
+
+	struct rule **r = rule_resolve_list;
+	while (*r && (*r)->idx < maxidx) {
+		struct rule *dr = *r;
+		if (target->sa_family == dr->u.net.af
+			&& match_net(target->sa_family, addr, dr->u.net.addr, dr->u.net.cidr)
+			&& match_port(port, dr->ports, dr->port_num)) return dr;
+		r++;
 	}
 	return NULL;
 }

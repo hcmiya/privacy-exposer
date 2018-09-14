@@ -44,7 +44,7 @@ static int init(int argc, char **argv) {
 			}
 			break;
 		case 'r':
-			rule_path = optarg;
+			rule_file_path = optarg;
 			break;
 		case '?':
 			exit(1);
@@ -52,7 +52,7 @@ static int init(int argc, char **argv) {
 		}
 	}
 
-	if (pidfile && rule_path && *rule_path != '/') {
+	if (pidfile && rule_file_path && *rule_file_path != '/') {
 		fprintf(stderr, "rules file must be specified by full path in daemon mode\n");
 		exit(1);
 	}

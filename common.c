@@ -24,7 +24,7 @@
 int retrieve_sock_info(
 		bool peer,
 		int fd,
-		char addrname[static 46],
+		char addrname[static 46], // ipv6アドレス最長
 		uint8_t *addrbin, // 16バイト以上あることを保証
 		uint16_t *port) {
 	uint8_t buf[128], portbin[2], addrbin_dummy[16];

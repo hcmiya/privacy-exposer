@@ -1,5 +1,6 @@
 #include <poll.h>
 #include <stdint.h>
+#include <sys/socket.h>
 
 struct petls {
 	char reqhost[262], id[9];
@@ -15,12 +16,15 @@ struct rule {
 		rule_domain,
 		rule_net4,
 		rule_net6,
+		rule_net4_resolve,
+		rule_net6_resolve,
 	} type;
 	union {
 		struct {
 			char *name;
 		} host;
 		struct {
+			sa_family_t af;
 			uint8_t cidr;
 			uint8_t addr[16];
 		} net;
@@ -54,8 +58,8 @@ int do_accept(struct pollfd *pfd, size_t bind_num);
 int retrieve_sock_info(
 		bool peer,
 		int fd,
-		char addrname[static 40],
-		uint8_t addrbin[static 16],
+		char addrname[static 46],
+		uint8_t *addrbin,
 		uint16_t *port);
 long lapse_ms(struct timespec *from);
 bool end_with(char const *haystack, char const *needle);
@@ -69,3 +73,5 @@ void pelog_open(bool use_syslog, int loglevel);
 void load_rules(void);
 void delete_rules(void);
 struct rule *match_rule(char const *host, uint16_t port);
+size_t test_net_num(struct rule *rule);
+struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target);

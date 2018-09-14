@@ -386,87 +386,147 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 	}
 }
 
-static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct rule *rule) {
-	char const *nexthost, *nextport;
-	bool unixsock = false;
-	struct proxy *proxy = rule ? rule->proxy : NULL;
-	if (proxy) {
-		switch (proxy->type) {
-		case proxy_type_unix_socks5:
-			unixsock = true;
+static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
+	pelog_th(LOG_DEBUG, "being checked %s", host);
+	bool host_is_ipaddr = false;
+	if (rule) {
+		pelog_th(LOG_DEBUG, "apply rule #%zu", rule->idx);
+		switch (rule->type) {
+		case rule_net4:
+		case rule_net4_resolve:
+		case rule_net6:
+		case rule_net6_resolve:
+			host_is_ipaddr = true;
 			break;
 		}
-		if (!unixsock) {
-			nexthost = proxy->u.host_port.name;
-			nextport = proxy->u.host_port.port;
-		}
 	}
-	else {
-		nexthost = host;
-		nextport = port;
+	struct proxy *proxy = rule ? rule->proxy : NULL;
+	// 名前解決が必要で、上流でプロクシを使わない場合のみ net?-resolve マッチを行う
+	bool test_net = do_rec && !host_is_ipaddr && !proxy && test_net_num(rule);
+	if (test_net) {
+		pelog_th(LOG_DEBUG, "being checked recursively");
 	}
 
-	int sockfd;
-	if (unixsock) {
-		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (proxy) {
+		switch (proxy->type) {
+		case proxy_type_deny:
+			pelog_th(LOG_INFO, "refused by rule set #%zu", rule->idx);
+			return -2;
+		case proxy_type_unix_socks5:
+			{
+				int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
 
-		socklen_t len = offsetof(struct sockaddr_un, sun_path) + strlen(proxy->u.path) + 1;
-		uint8_t buf[len];
-		struct sockaddr_un *upath = (void*)buf;
-		upath->sun_family = AF_UNIX;
-		strcpy(upath->sun_path, proxy->u.path);
+				socklen_t len = offsetof(struct sockaddr_un, sun_path) + strlen(proxy->u.path) + 1;
+				uint8_t buf[len];
+				struct sockaddr_un *upath = (void*)buf;
+				upath->sun_family = AF_UNIX;
+				strcpy(upath->sun_path, proxy->u.path);
 
-		if (connect(sockfd, (struct sockaddr *)upath, len)) {
-			pelog_th(LOG_INFO, "upstream: connect() to unix: %s", strerror(errno));
-			close(sockfd);
-			fail(1);
+				if (connect(sockfd, (struct sockaddr *)upath, len)) {
+					pelog_th(LOG_INFO, "upstream: connect() to unix: %s", strerror(errno));
+					close(sockfd);
+					return -1;
+				}
+				return sockfd;
+			}
+		default:
+			host = proxy->u.host_port.name;
+			port = proxy->u.host_port.port;
+			break;
 		}
 	}
-	else {
-		struct addrinfo *res;
-		int gai_ret = getaddrinfo(nexthost, nextport, &(struct addrinfo) {
-			.ai_flags = AI_NUMERICSERV,
-			.ai_family = AF_UNSPEC,
-			.ai_socktype = SOCK_STREAM,
-			.ai_protocol = 6,
-		}, &res);
-		if (gai_ret) {
-			pelog_th(LOG_INFO, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
-			fail(3);
+
+	struct addrinfo *res;
+	int gai_ret = getaddrinfo(host, port, &(struct addrinfo) {
+		.ai_flags = AI_NUMERICSERV,
+		.ai_family = AF_UNSPEC,
+		.ai_socktype = SOCK_STREAM,
+		.ai_protocol = 6,
+	}, &res);
+	if (gai_ret) {
+		pelog_th(LOG_INFO, "upstream: getaddrinfo(): %s", gai_strerror(gai_ret));
+		return -1;
+	}
+
+	int fd;
+	struct addrinfo *rp;
+	bool matched_ipv4 = false, matched_ipv6 = false;
+REDO:
+	for (rp = res; rp; rp = rp->ai_next) {
+		char straddr[64];
+		getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
+
+		if (test_net) {
+			pelog_th(LOG_DEBUG, "upstream: resolved: %s", straddr);
+			struct rule *rule_resolve = match_net_resolve(rule ? rule->idx : (size_t)-1, rp->ai_addr);
+			if (rule_resolve) {
+				pelog_th(LOG_DEBUG, "upstream: %s: applied new rule set #%zu", straddr, rule_resolve->idx);
+				struct proxy *nrproxy = rule_resolve->proxy;
+				switch (rp->ai_family) {
+				case AF_INET:
+					matched_ipv4 = true;
+					break;
+				case AF_INET6:
+					matched_ipv6 = true;
+					break;
+				}
+				if (nrproxy && nrproxy->type == proxy_type_deny) {
+					pelog_th(LOG_DEBUG, "upstream: %s: rejected by rule set #%zu", straddr, rule_resolve->idx);
+					fd = -2;
+					continue;
+				}
+				fd = connect_next(tls, straddr, port, rule_resolve, false);
+				if (fd >= 0) break;
+			}
 		}
-		int error = 1;
-		struct addrinfo *rp;
-		for (rp = res; rp; rp = rp->ai_next) {
-			sockfd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-			if (sockfd != -1) {
-				if (!connect(sockfd, rp->ai_addr, rp->ai_addrlen)) {
+		else {
+			if (rp->ai_family == AF_INET && matched_ipv4) {
+				continue;
+			}
+			if (rp->ai_family == AF_INET6 && matched_ipv6) {
+				continue;
+			}
+			pelog_th(LOG_DEBUG, "upstream: resolved: %s", straddr);
+
+			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+			if (fd != -1) {
+				if (!connect(fd, rp->ai_addr, rp->ai_addrlen)) {
 					break;
 				}
 				switch (errno) {
 				case ENETUNREACH:
-					error = 3; break;
+					fd = -3; break;
 				case EHOSTUNREACH:
 				case ETIMEDOUT:
-					error = 4; break;
+					fd = -4; break;
 				case ECONNREFUSED:
-					error = 5; break;
+					fd = -5; break;
 				default:
-					error = 1; break;
+					fd = -1; break;
 				}
 				pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
 			}
 			else {
 				pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
 			}
-			close(sockfd);
+			close(fd);
+			tls->dest = -1;
 		}
-		freeaddrinfo(res);
-		if (!rp) fail(error);
 	}
+	if (!rp && test_net) {
+		// net?-resolveによるIPアドレス検査で何も引っ掛からなかった時はループをもう一度
+		test_net = false;
+		goto REDO;
+	}
+	freeaddrinfo(res);
+	return fd;
+}
 
-	tls->dest = sockfd;
-	if (proxy) greet_next_proxy(tls, host, port, proxy, sockfd);
-	return sockfd;
+static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct rule *rule) {
+	int upstream = connect_next(tls, host, port, rule, true);
+	if (upstream < 0) fail(-upstream);
+	if (rule && rule->proxy) greet_next_proxy(tls, host, port, rule->proxy, upstream);
+	return upstream;
 }
 
 static int parse_header(struct petls *tls) {
@@ -559,15 +619,6 @@ static int parse_header(struct petls *tls) {
 
 	// 宛先に応じたプロクシを選択
 	struct rule *rule = match_rule(destname, port);
-	if (rule && rule->proxy && rule->proxy->type == proxy_type_deny) {
-		pelog_th(LOG_INFO, "refused by rule set #%zu", rule->idx);
-		uint8_t *p = buf;
-		memcpy(p, "\x5\x2\x0", 3);
-		memcpy(p += 3, destbin, destlen);
-		write_header(src, buf, p - buf + destlen);
-		fail(-1);
-	}
-
 	// 上流に接続してソケットを得る
 	int upstream = get_upstream_socket(tls, destname, destport, rule);
 

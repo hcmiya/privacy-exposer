@@ -15,6 +15,5 @@ GLOBAL void (*pelog_th)(int priority, char const *format, ...);
 GLOBAL void (*vpelog)(int priority, char const *format, va_list ap);
 GLOBAL void (*pelog)(int priority, char const *format, ...);
 
-GLOBAL struct rule *rule_list;
-GLOBAL char const *rule_path;
+GLOBAL char const *rule_file_path;
 GLOBAL pthread_key_t sock_cleaner;
