@@ -377,6 +377,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 
 void parse_rules(FILE *fp) {
 	rule_cur = &rule_begin;
+	rule_resolve_num = 0;
 	size_t const buflen = 1024;
 	char line[buflen];
 	for (lineno = 1; fgets(line, buflen, fp); lineno++) {
@@ -433,9 +434,10 @@ void delete_rules(void) {
 		}
 		free(r->ports);
 
-		for (struct proxy *p = proxy_begin.next; p; ) {
+		for (struct proxy *p = r->proxy; p; ) {
 			switch (p->type) {
 			case proxy_type_socks5:
+			case proxy_type_socks4a:
 			case proxy_type_http_connect:
 				free(p->u.host_port.name);
 				break;
@@ -445,15 +447,15 @@ void delete_rules(void) {
 			}
 
 			p = p->next;
-			switch (proxy_begin.next->type) {
+			switch (r->proxy->type) {
 			case proxy_type_deny:
 				// denyは静的領域を指しているのでfreeしないこと
 				break;
 			default:
-				free(proxy_begin.next);
+				free(r->proxy);
 				break;
 			}
-			proxy_begin.next = p;
+			r->proxy = p;
 		}
 
 		r = r->next;

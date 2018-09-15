@@ -139,20 +139,20 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static void next_socks5(struct petls *tls, char const *host, char const *port, int upstream) {
+static void next_socks5(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
 	uint8_t buf[262];
 	if (strlen(host) > 255) {
-		pelog_th(LOG_INFO, "upstream: too long hostname: %s", host);
+		pelog_th(LOG_INFO, "proxy #%d: too long hostname: %s", idx, host);
 		fail(1);
 	}
-	pelog_th(LOG_DEBUG, "upstream: connect request");
+	pelog_th(LOG_DEBUG, "proxy #%d: connect request", idx);
 	write_header(upstream, "\x5\x1\x0", 3);
 	read_header(upstream, buf, 2, timeout_read_short, false);
 	if (buf[0] != 5 || buf[1] != 0) {
 		fail(5);
 	}
 
-	pelog_th(LOG_DEBUG, "upstream: tell destination");
+	pelog_th(LOG_DEBUG, "proxy #%d: tell destination", idx);
 	uint8_t *p = buf, *req = buf, hostlen = (uint8_t)strlen(host);
 	uint16_t portbin = htons((uint16_t)atoi(port));
 	memcpy(p, "\x5\x1\x0\x3", 4);
@@ -187,13 +187,13 @@ static void next_socks5(struct petls *tls, char const *host, char const *port, i
 	}
 }
 
-static void next_socks4a(struct petls *tls, char const *host, char const *port, int upstream) {
+static void next_socks4a(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
 	if (strlen(host) > 255) {
-		pelog_th(LOG_INFO, "upstream: too long hostname: %s", host);
+		pelog_th(LOG_INFO, "proxy #%d: too long hostname: %s", idx, host);
 		fail(1);
 	}
 
-	pelog_th(LOG_DEBUG, "upstream: connect request");
+	pelog_th(LOG_DEBUG, "proxy #%d: connect request", idx);
 	uint8_t buf[265];
 	// ver, connect, port, 0.0.0.1, nul
 	memcpy(buf, "\x4\x1pp\x0\x0\x0\x1\x0", 9);
@@ -240,7 +240,7 @@ static bool http_header_char(int c) {
 	return !!strchr("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&'*+-.^_`|~", c);
 }
 
-static int next_http_connect(struct petls *tls, char const *host, char const *port, int upstream) {
+static int next_http_connect(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
 	bool ipv6 = strchr(host, ':');
 	// CONNECT host.example:80 HTTP/1.1
 	// Host: host.example
@@ -277,7 +277,7 @@ static int next_http_connect(struct petls *tls, char const *host, char const *po
 		fail(1);
 	}
 	if (st < 200 || st >= 300) {
-		pelog_th(LOG_INFO, "upstream: connection failed: %u", st);
+		pelog_th(LOG_INFO, "proxy #%d: connection failed: %u", idx, st);
 		fail(-1);
 	}
 
@@ -366,6 +366,7 @@ static int next_http_connect(struct petls *tls, char const *host, char const *po
 }
 
 static void greet_next_proxy(struct petls *tls, char const *host, char const *port, struct proxy *proxy, int upstream) {
+	int idx = 1;
 	while (proxy) {
 		char const *nexthost, *nextport;
 		uint8_t buf[300];
@@ -381,22 +382,22 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 		switch (proxy->type) {
 		case proxy_type_socks5:
 		case proxy_type_unix_socks5:
-			next_socks5(tls, nexthost, nextport, upstream);
+			next_socks5(tls, nexthost, nextport, upstream, idx);
 			break;
 		case proxy_type_socks4a:
-			next_socks4a(tls, nexthost, nextport, upstream);
+			next_socks4a(tls, nexthost, nextport, upstream, idx);
 			break;
 		case proxy_type_http_connect:
 			{
-				int http_error = next_http_connect(tls, nexthost, nextport, upstream);
+				int http_error = next_http_connect(tls, nexthost, nextport, upstream, idx);
 				switch (http_error) {
 				case 0:
 					break;
 				case 1:
-					pelog_th(LOG_INFO, "upstream: unexpected response");
+					pelog_th(LOG_INFO, "proxy #%d: unexpected response", idx);
 					break;
 				case 2:
-					pelog_th(LOG_INFO, "upstream: unexpected eof");
+					pelog_th(LOG_INFO, "proxy #%d: unexpected eof", idx);
 					break;
 				}
 				if (http_error) {
@@ -405,8 +406,9 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 			}
 			break;
 		}
-		pelog_th(LOG_DEBUG, "upstream: connect succeeded");
+		pelog_th(LOG_DEBUG, "proxy #%d: connect succeeded", idx);
 		proxy = proxy->next;
+		idx++;
 	}
 }
 
