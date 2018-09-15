@@ -187,6 +187,27 @@ static void next_socks5(struct petls *tls, char const *host, char const *port, i
 	}
 }
 
+static void next_socks4a(struct petls *tls, char const *host, char const *port, int upstream) {
+	if (strlen(host) > 255) {
+		pelog_th(LOG_INFO, "upstream: too long hostname: %s", host);
+		fail(1);
+	}
+
+	pelog_th(LOG_DEBUG, "upstream: connect request");
+	uint8_t buf[265];
+	// ver, connect, port, 0.0.0.1, nul
+	memcpy(buf, "\x4\x1pp\x0\x0\x0\x1\x0", 9);
+	memcpy(&buf[2], (uint16_t[]){htons((uint16_t)atoi(port))}, 2);
+	strcpy((char*)&buf[9], host);
+	write_header(upstream, buf, 9 + strlen(host) + 1);
+
+	// ver, result, ign
+	read_header(upstream, buf, 8, timeout_read_short, false);
+	if (buf[0] != 0 || buf[1] != 90) {
+		fail(1);
+	}
+}
+
 static ssize_t http_peek(int upstream, void *buf, size_t len) {
 #ifdef NDEBUG
 	int const timeout = 20
@@ -362,6 +383,9 @@ static void greet_next_proxy(struct petls *tls, char const *host, char const *po
 		case proxy_type_unix_socks5:
 			next_socks5(tls, nexthost, nextport, upstream);
 			break;
+		case proxy_type_socks4a:
+			next_socks4a(tls, nexthost, nextport, upstream);
+			break;
 		case proxy_type_http_connect:
 			{
 				int http_error = next_http_connect(tls, nexthost, nextport, upstream);
@@ -403,14 +427,11 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	struct proxy *proxy = rule ? rule->proxy : NULL;
 	// 名前解決が必要で、上流でプロクシを使わない場合のみ net?-resolve マッチを行う
 	bool test_net = do_rec && !host_is_ipaddr && !proxy && test_net_num(rule);
-	if (test_net) {
-		pelog_th(LOG_DEBUG, "being checked recursively");
-	}
 
 	if (proxy) {
 		switch (proxy->type) {
 		case proxy_type_deny:
-			pelog_th(LOG_INFO, "refused by rule set #%zu", rule->idx);
+			pelog_th(LOG_INFO, "reject by rule set #%zu", rule->idx);
 			return -2;
 		case proxy_type_unix_socks5:
 			{
@@ -457,10 +478,10 @@ REDO:
 		getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
 
 		if (test_net) {
-			pelog_th(LOG_DEBUG, "upstream: resolved: %s", straddr);
+			pelog_th(LOG_DEBUG, "upstream: test net: %s", straddr);
 			struct rule *rule_resolve = match_net_resolve(rule ? rule->idx : (size_t)-1, rp->ai_addr);
 			if (rule_resolve) {
-				pelog_th(LOG_DEBUG, "upstream: %s: applied new rule set #%zu", straddr, rule_resolve->idx);
+				pelog_th(LOG_DEBUG, "upstream: %s: applying new rule set #%zu", straddr, rule_resolve->idx);
 				struct proxy *nrproxy = rule_resolve->proxy;
 				switch (rp->ai_family) {
 				case AF_INET:
@@ -469,11 +490,6 @@ REDO:
 				case AF_INET6:
 					matched_ipv6 = true;
 					break;
-				}
-				if (nrproxy && nrproxy->type == proxy_type_deny) {
-					pelog_th(LOG_DEBUG, "upstream: %s: rejected by rule set #%zu", straddr, rule_resolve->idx);
-					fd = -2;
-					continue;
 				}
 				fd = connect_next(tls, straddr, port, rule_resolve, false);
 				if (fd >= 0) break;
@@ -486,7 +502,7 @@ REDO:
 			if (rp->ai_family == AF_INET6 && matched_ipv6) {
 				continue;
 			}
-			pelog_th(LOG_DEBUG, "upstream: resolved: %s", straddr);
+			pelog_th(LOG_DEBUG, "upstream: creating connection: %s", straddr);
 
 			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 			if (fd != -1) {
@@ -513,7 +529,7 @@ REDO:
 			tls->dest = -1;
 		}
 	}
-	if (!rp && test_net) {
+	if (!rp && test_net && !matched_ipv4 && !matched_ipv6) {
 		// net?-resolveによるIPアドレス検査で何も引っ掛からなかった時はループをもう一度
 		test_net = false;
 		goto REDO;

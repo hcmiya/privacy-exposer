@@ -344,7 +344,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 	static struct proxy_table_ const proxy_table[] = {
 		{ "deny", proxy_type_deny, parse_proxy_deny },
 		{ "socks5", proxy_type_socks5, parse_proxy_hostname },
-		// { "socks4a", proxy_type_socks4a, parse_proxy_socks4a },
+		{ "socks4a", proxy_type_socks4a, parse_proxy_hostname },
 		{ "unix-socks5", proxy_type_unix_socks5, parse_proxy_abs_path },
 		{ "http-connect", proxy_type_http_connect, parse_proxy_hostname },
 		{ NULL, 0, NULL },
@@ -433,9 +433,7 @@ void delete_rules(void) {
 		}
 		free(r->ports);
 
-		// denyは静的領域を指しているのでfreeしないこと
-		struct proxy *p = proxy_begin.next;
-		if (p && p->type != proxy_type_deny) while (p) {
+		for (struct proxy *p = proxy_begin.next; p; ) {
 			switch (p->type) {
 			case proxy_type_socks5:
 			case proxy_type_http_connect:
@@ -445,8 +443,16 @@ void delete_rules(void) {
 				free(p->u.path);
 				break;
 			}
+
 			p = p->next;
-			free(proxy_begin.next);
+			switch (proxy_begin.next->type) {
+			case proxy_type_deny:
+				// denyは静的領域を指しているのでfreeしないこと
+				break;
+			default:
+				free(proxy_begin.next);
+				break;
+			}
 			proxy_begin.next = p;
 		}
 
@@ -462,7 +468,7 @@ void load_rules(void) {
 	if (!rule_file_path) return;
 	FILE *rfp = fopen(rule_file_path, "r");
 	if (!rfp) {
-		perror("-r");
+		perror(rule_file_path);
 		exit(1);
 	}
 	parse_rules(rfp);
