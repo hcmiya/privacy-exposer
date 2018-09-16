@@ -206,6 +206,10 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 		rtn++;
 	}
 	else port = NULL;
+	if (!*host && !port) {
+		error("no rule for %s", name);
+	}
+
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
@@ -218,9 +222,8 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 }
 
 static size_t parse_rule_all(char **unused, size_t fieldnum, char const *name, int type) {
-	rule_cur->next = calloc(1, sizeof(*rule_cur));
+	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
 	rule_cur->type = type;
-	rule_cur = rule_cur->next;
 	return 0;
 }
 
