@@ -1,0 +1,18 @@
+#!/sbin/openrc-run
+# Copyright 1999-2018 Gentoo Foundation
+# Distributed under the terms of the GNU General Public License v2
+
+command=/usr/local/bin/privacy-exposer
+pidfile="/run/privacy-exposer.pid"
+command_args="-l5 -r /var/lib/privacy-exposer/rules.conf -p $pidfile"
+
+extra_started_commands=reload
+
+depend() {
+	need net.lo
+}
+
+reload() {
+	kill -s HUP $(<$pidfile)
+}
+

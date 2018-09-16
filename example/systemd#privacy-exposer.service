@@ -1,0 +1,13 @@
+[Unit]
+Description=Privacy Exposer
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/privacy-exposer -p /run/privacy-exposer.pid -l 5 -r /var/lib/privacy-exposer/rules.conf
+ExecReload=/bin/kill -s HUP $MAINPID
+Type=forking
+PIDFile=/run/privacy-exposer.pid
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
