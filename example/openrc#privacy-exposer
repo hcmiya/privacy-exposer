@@ -13,6 +13,7 @@ depend() {
 }
 
 reload() {
+	ebegin "Reloading rule set"
 	kill -s HUP $(<$pidfile)
+	eend $?
 }
-
