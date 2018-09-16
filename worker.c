@@ -26,7 +26,7 @@ static pid_t root_process;
 static pid_t current_worker;
 static pid_t worker_list[128]; // 一応大量に取っておく
 static size_t worker_num = 0; // 基本的に1つ
-static int pid_pipe[2];
+static int pid_pipe[2] = {-1, -1};
 static volatile bool need_worker;
 static volatile bool need_reload;
 
@@ -103,14 +103,10 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 	sigaction(SIGQUIT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 
-	// 終了時にワーカープロセスにもシグナルを飛ばせるようにPIDを保存しておくやつ
-	pipe(pid_pipe);
-	pthread_t counter_th;
-	pthread_create(&counter_th, NULL, count_worker, NULL);
-
 	atexit(kill_worker);
 
 	need_worker = true;
+	pthread_t counter_th;
 	while (1) {
 		if (need_worker) {
 			pid_t pid = fork();
@@ -126,6 +122,11 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 			}
 			current_worker = pid;
 			pelog(LOG_NOTICE, "current worker: %ld", (long)pid);
+			if (pid_pipe[0] == -1) {
+				// 終了時にワーカープロセスにもシグナルを飛ばせるようにPIDを保存しておくやつ
+				pipe(pid_pipe);
+				pthread_create(&counter_th, NULL, count_worker, NULL);
+			}
 			write_worker_pid(pid);
 			need_worker = false;
 			sa.sa_handler = trap_hup;
