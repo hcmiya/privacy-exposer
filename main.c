@@ -117,6 +117,8 @@ static void daemonize() {
 	freopen("/dev/null", "w", stderr);
 }
 
+int worker_loop(struct pollfd *poll_list, int bind_num);
+
 int main(int argc, char **argv) {
 	int argstart = init(argc, argv);
 	char *bind_addr, *bind_port;

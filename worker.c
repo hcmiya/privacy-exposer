@@ -24,9 +24,9 @@
 
 static pid_t root_process;
 static pid_t current_worker;
-static pid_t worker_list[128]; // 一応大量に取っておく
+static pid_t *worker_list;
 static size_t worker_num = 0; // 基本的に1つ
-static int pid_pipe[2] = {-1, -1};
+static int pid_pipe[2];
 static volatile bool need_worker;
 static volatile bool need_reload;
 
@@ -48,10 +48,12 @@ static void *count_worker(void *_) {
 	while (readlen = read(pid_pipe[0], &pid, sizeof(pid))) {
 		if (readlen > 0) {
 			if (pid > 0) {
+				pelog(LOG_DEBUG, "add worker pid %jd to list", (intmax_t)pid);
 				lsearch(&pid, worker_list, &worker_num, sizeof(pid), pid_cmp);
 			}
 			else {
 				pid_t dead = -pid;
+				pelog(LOG_DEBUG, "delete worker pid %jd from list", (intmax_t)dead);
 				pid_t *p = lfind(&dead, worker_list, &worker_num, sizeof(dead), pid_cmp);
 				memmove(p, p + 1, (--worker_num - (p - worker_list)) * sizeof(*p));
 				if (!worker_num && !need_worker) {
@@ -80,9 +82,10 @@ static void trap_child(int sig) {
 }
 
 static void trap_hup(int sig) {
-	signal(SIGHUP, SIG_DFL);
 	need_reload = true;
 }
+
+int do_accept(struct pollfd *poll_list, size_t bind_num);
 
 int worker_loop(struct pollfd *poll_list, int bind_num) {
 	root_process = getpid();
@@ -103,10 +106,17 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 	sigaction(SIGQUIT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
 
+	sa.sa_handler = trap_hup;
+	sigaction(SIGHUP, &sa, NULL);
+	
+	// 終了時にワーカープロセスにもシグナルを飛ばせるようにPIDを保存しておくやつ
+	pthread_t counter_th;
+	pipe(pid_pipe);
+	worker_list = calloc(128, sizeof(*worker_list)); // 一応大量に取っておく
+	pthread_create(&counter_th, NULL, count_worker, NULL);
 	atexit(kill_worker);
 
 	need_worker = true;
-	pthread_t counter_th;
 	while (1) {
 		if (need_worker) {
 			pid_t pid = fork();
@@ -116,21 +126,17 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 				return 1;
 			case 0:
 				// socks.cへ
+				free(worker_list);
+				close(pid_pipe[1]);
+				close(pid_pipe[0]);
 				return do_accept(poll_list, bind_num);
 			default:
 				break;
 			}
 			current_worker = pid;
 			pelog(LOG_NOTICE, "current worker: %ld", (long)pid);
-			if (pid_pipe[0] == -1) {
-				// 終了時にワーカープロセスにもシグナルを飛ばせるようにPIDを保存しておくやつ
-				pipe(pid_pipe);
-				pthread_create(&counter_th, NULL, count_worker, NULL);
-			}
 			write_worker_pid(pid);
 			need_worker = false;
-			sa.sa_handler = trap_hup;
-			sigaction(SIGHUP, &sa, NULL);
 		}
 
 		sigsuspend(&sig_waiting);

@@ -21,25 +21,14 @@
 #include <sys/un.h>
 #include <stddef.h>
 #include <inttypes.h>
+#include <assert.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
 
-#ifdef NDEBUG
-static int const timeout_greet = 3000;
-static int const timeout_read_short = 1000;
-static int const timeout_read_upstream = 20000;
-static int const timeout_write = 500;
-#else
-static int const timeout_greet = -1;
-static int const timeout_read_short = -1;
-static int const timeout_read_upstream = -1;
-static int const timeout_write = -1;
-#endif
-
 static int count_pipe[2];
 static size_t connection_num;
-static bool quitting;
+static volatile bool quitting;
 
 void clean_sock(void *tls_) {
 	struct petls *tls = tls_;
@@ -76,7 +65,7 @@ static void fail(int type) {
 	pthread_exit(NULL);
 }
 
-static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet) {
+void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet) {
 	uint8_t *buf = buf_;
 	char const * const errorat = atgreet ? "greet" : "request";
 	struct pollfd po = {
@@ -110,7 +99,7 @@ static void read_header(int fd, void *buf_, size_t left, int timeout, bool atgre
 	}
 }
 
-static void write_header(int fd, void const *buf_, size_t left) {
+void write_header(int fd, void const *buf_, size_t left) {
 	uint8_t const *buf = buf_;
 	struct pollfd po = {
 		.fd = fd,
@@ -139,294 +128,22 @@ static void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static void next_socks5(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
-	uint8_t buf[262];
-	if (strlen(host) > 255) {
-		pelog_th(LOG_INFO, "proxy #%d: too long hostname: %s", idx, host);
-		fail(1);
-	}
-	pelog_th(LOG_DEBUG, "proxy #%d: connect request", idx);
-	write_header(upstream, "\x5\x1\x0", 3);
-	read_header(upstream, buf, 2, timeout_read_short, false);
-	if (buf[0] != 5 || buf[1] != 0) {
-		fail(5);
-	}
-
-	pelog_th(LOG_DEBUG, "proxy #%d: tell destination", idx);
-	uint8_t *p = buf, *req = buf, hostlen = (uint8_t)strlen(host);
-	uint16_t portbin = htons((uint16_t)atoi(port));
-	memcpy(p, "\x5\x1\x0\x3", 4);
-	memcpy(p += 4, &hostlen, 1);
-	memcpy(p += 1, host, hostlen);
-	memcpy(p += hostlen, &portbin, 2);
-	p += 2;
-	size_t reqlen = p - buf;
-	write_header(upstream, req, reqlen);
-
-	read_header(upstream, p, 5, timeout_read_upstream, false);
-	if (p[0] != 5 || p[2] != 0) {
-		fail(1);
-	}
-	int left;
-	switch(p[3]) {
-	case 1:
-		left = 5; break;
-	case 3:
-		left = p[4] + 2; break;
-	case 4:
-		left = 17; break;
-	default:
-		fail(1);
-	}
-	read_header(upstream, p + 5, left, timeout_read_short, false);
-
-	if (p[1]) {
-		req[1] = p[1];
-		write_header(tls->src, req, reqlen);
-		fail(-1);
-	}
-}
-
-static void next_socks4a(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
-	if (strlen(host) > 255) {
-		pelog_th(LOG_INFO, "proxy #%d: too long hostname: %s", idx, host);
-		fail(1);
-	}
-
-	pelog_th(LOG_DEBUG, "proxy #%d: connect request", idx);
-	uint8_t buf[265];
-	// ver, connect, port, 0.0.0.1, nul
-	memcpy(buf, "\x4\x1pp\x0\x0\x0\x1\x0", 9);
-	memcpy(&buf[2], (uint16_t[]){htons((uint16_t)atoi(port))}, 2);
-	strcpy((char*)&buf[9], host);
-	write_header(upstream, buf, 9 + strlen(host) + 1);
-
-	// ver, result, ign
-	read_header(upstream, buf, 8, timeout_read_short, false);
-	if (buf[0] != 0 || buf[1] != 90) {
-		fail(1);
-	}
-}
-
-static ssize_t http_peek(int upstream, void *buf, size_t len) {
-#ifdef NDEBUG
-	int const timeout = 20
-#else
-	int const timeout = -1
-#endif
-	;
-	struct pollfd pfd = {
-		.fd = upstream,
-		.events = POLLIN,
-	};
-
-	int poll_ret = poll(&pfd, 1, timeout);
-	if (poll_ret == 0) {
-		fail(1);
-	}
-	if (poll_ret < 0) {
-		fail(1);
-	}
-	ssize_t readlen = recv(upstream, buf, len, MSG_PEEK);
-	if (readlen < 0) {
-		fail(1);
-	}
-	return readlen;
-}
-static bool http_valid_char(int c) {
-	return !(c >= 0x7f || c >= 0 && c < 0x20 && !strchr("\n\r\t", c));
-}
-static bool http_header_char(int c) {
-	return !!strchr("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!#$%&'*+-.^_`|~", c);
-}
-
-static int next_http_connect(struct petls *tls, char const *host, char const *port, int upstream, int idx) {
-	bool ipv6 = strchr(host, ':');
-	// CONNECT host.example:80 HTTP/1.1
-	// Host: host.example
-	write_header(upstream, "CONNECT ", 8);
-	if (ipv6) write_header(upstream, "[", 1);
-	write_header(upstream, host, strlen(host));
-	if (ipv6) write_header(upstream, "]", 1);
-	write_header(upstream, ":", 1);
-	write_header(upstream, port, strlen(port));
-	write_header(upstream, " HTTP/1.1\r\nHost: ", 17);
-	if (ipv6) write_header(upstream, "[", 1);
-	write_header(upstream, host, strlen(host));
-	if (ipv6) write_header(upstream, "]", 1);
-	write_header(upstream, "\r\n\r\n", 4);
-
-	// HTTP/1.1 200 OK
-	// Header: ***
-	char buf[256], *p;
-	read_header(upstream, buf, 13, timeout_read_upstream, false);
-	if (memcmp(buf, "HTTP/1.1 ", 9) != 0) {
-		return 1;
-	}
-	p = buf + 9;
-	unsigned int st = 0;
-	for (int i = 0; i < 3; i++) {
-		if (!isdigit(*p)) {
-			return 1;
-		}
-		st = st * 10 + (*p - '0');
-		p++;
-	}
-	if (*p != ' ') {
-		return 1;
-		fail(1);
-	}
-	if (st < 200 || st >= 300) {
-		pelog_th(LOG_INFO, "proxy #%d: connection failed: %u", idx, st);
-		fail(-1);
-	}
-
-	// 1文字ずつ読み取っていって、\r\n\r\nに遭遇したら抜ける
-	bool cr = false, terminated = false, header = false;
-	char *cur, *end;
-	while (!terminated) {
-		ssize_t len = http_peek(upstream, buf, 256);
-		if (len == 0) return 2;
-
-		cur = buf; end = cur + len;
-		while (cur < end) {
-			// ステータス行残り
-			int c = *cur++;
-			if (!http_valid_char(c)) return 1;
-
-			if (!cr && c == '\n') {
-				return 1;
-			}
-			if (cr) {
-				if (c != '\n') {
-					return 1;
-				}
-				cr = false;
-				terminated = true;
-				break;
-			}
-			else {
-				cr = c == '\r';
-			}
-		}
-		read(upstream, buf, cur - buf);
-	}
-
-	bool established = false;
-	while (!established) {
-		ssize_t len = http_peek(upstream, buf, 256);
-		if (len == 0) return 2;
-
-		cur = buf; end = cur + len;
-		while (cur < end) {
-			// ヘッダ行(プロクシ返答なら本当は無いはず)
-			int c = *cur++;
-			if (!http_valid_char(c)) return 1;
-
-			if (!cr && c == '\n') {
-				return 1;
-			}
-			if (cr) {
-				if (c != '\n') {
-					fail(-1);
-				}
-				if (terminated) {
-					established = true;
-					break;
-				}
-				else {
-					cr = false;
-					terminated = true;
-				}
-			}
-			else if (header) {
-				if (http_header_char(c)) {}
-				else if (c == ':') header = false;
-				else return 1;
-			}
-			else {
-				if (terminated) {
-					if (c == '\r') cr = true;
-					else if (http_header_char(c)) {
-						terminated = false;
-						header = true;
-					}
-					else {
-						return 1;
-					}
-				}
-				else {
-					cr = c == '\r';
-				}
-			}
-		}
-		read(upstream, buf, cur - buf);
-	}
-	return 0;
-}
-
-static void greet_next_proxy(struct petls *tls, char const *host, char const *port, struct proxy *proxy, int upstream) {
-	int idx = 1;
-	while (proxy) {
-		char const *nexthost, *nextport;
-		uint8_t buf[300];
-		if (proxy->next) {
-			nexthost = proxy->next->u.host_port.name;
-			nextport = proxy->next->u.host_port.port;
-		}
-		else {
-			nexthost = host;
-			nextport = port;
-		}
-
-		switch (proxy->type) {
-		case proxy_type_socks5:
-		case proxy_type_unix_socks5:
-			next_socks5(tls, nexthost, nextport, upstream, idx);
-			break;
-		case proxy_type_socks4a:
-			next_socks4a(tls, nexthost, nextport, upstream, idx);
-			break;
-		case proxy_type_http_connect:
-			{
-				int http_error = next_http_connect(tls, nexthost, nextport, upstream, idx);
-				switch (http_error) {
-				case 0:
-					break;
-				case 1:
-					pelog_th(LOG_INFO, "proxy #%d: unexpected response", idx);
-					break;
-				case 2:
-					pelog_th(LOG_INFO, "proxy #%d: unexpected eof", idx);
-					break;
-				}
-				if (http_error) {
-					fail(1);
-				}
-			}
-			break;
-		}
-		pelog_th(LOG_DEBUG, "proxy #%d: connect succeeded", idx);
-		proxy = proxy->next;
-		idx++;
-	}
-}
-
 static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
+	assert(rule);
+
 	pelog_th(LOG_DEBUG, "being checked %s", host);
 	bool host_is_ipaddr = false;
-	if (rule) {
-		pelog_th(LOG_DEBUG, "apply rule #%zu", rule->idx);
-		switch (rule->type) {
-		case rule_net4:
-		case rule_net4_resolve:
-		case rule_net6:
-		case rule_net6_resolve:
-			host_is_ipaddr = true;
-			break;
-		}
+
+	pelog_th(LOG_DEBUG, "apply rule #%zu", rule->idx);
+	switch (rule->type) {
+	case rule_net4:
+	case rule_net4_resolve:
+	case rule_net6:
+	case rule_net6_resolve:
+		host_is_ipaddr = true;
+		break;
 	}
-	struct proxy *proxy = rule ? rule->proxy : NULL;
+	struct proxy *proxy = rule->proxy;
 	// 名前解決が必要で、上流でプロクシを使わない場合のみ net?-resolve マッチを行う
 	bool test_net = do_rec && !host_is_ipaddr && !proxy && test_net_num(rule);
 
@@ -540,11 +257,10 @@ REDO:
 	return fd;
 }
 
+int greet_next_proxy(char const *host, char const *port, struct proxy *proxy, int upstream);
+
 static int get_upstream_socket(struct petls *tls, char const *host, char const *port, struct rule *rule) {
-	int upstream = connect_next(tls, host, port, rule, true);
-	if (upstream < 0) fail(-upstream);
-	if (rule && rule->proxy) greet_next_proxy(tls, host, port, rule->proxy, upstream);
-	return upstream;
+	return greet_next_proxy(host, port, rule->proxy, connect_next(tls, host, port, rule, true));
 }
 
 static int parse_header(struct petls *tls) {
@@ -635,10 +351,9 @@ static int parse_header(struct petls *tls) {
 	sprintf(tls->reqhost, "%s#%s", destname, destport);
 	pelog_th(LOG_DEBUG, "header parsed");
 
-	// 宛先に応じたプロクシを選択
-	struct rule *rule = match_rule(destname, port);
-	// 上流に接続してソケットを得る
-	int upstream = get_upstream_socket(tls, destname, destport, rule);
+	// 宛先に応じたプロクシを選択し、上流に接続してソケットを得る
+	int upstream = get_upstream_socket(tls, destname, destport, match_rule(destname, port));
+	if (upstream < 0) fail(-upstream);
 
 	// 成功したのでこのデーモンから出ているソースアドレスとポートを接続元へ返す
 	char srcname[64];
@@ -769,9 +484,6 @@ static void force_exit(int sig) {
 }
 static void trap_hup(int hup) {
 	quitting = true;
-	if (!connection_num) {
-		close(count_pipe[1]);
-	}
 }
 
 static void *count_connection(void *_) {

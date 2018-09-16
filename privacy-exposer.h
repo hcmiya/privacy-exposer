@@ -52,7 +52,8 @@ struct rule {
 };
 
 // socks.c
-int do_accept(struct pollfd *pfd, size_t bind_num);
+void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet);
+void write_header(int fd, void const *buf_, size_t left);
 
 // common.c
 int retrieve_sock_info(
@@ -77,4 +78,3 @@ size_t test_net_num(struct rule *rule);
 struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target);
 
 // worker.c
-int worker_loop(struct pollfd *poll_list, int bind_num);

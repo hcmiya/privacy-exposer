@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #include <stdarg.h>
 #include <ctype.h>
+#include <assert.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -411,6 +412,11 @@ void parse_rules(FILE *fp) {
 		fields[fieldnum] = NULL;
 		parse_fields(fields, fieldnum);
 	}
+	// 最後は全てにマッチするルールで終端させる
+	if (rule_cur == &rule_begin || rule_cur->type != rule_all) {
+		parse_fields((char *[]){"all", NULL}, 1);
+	}
+
 	rule_resolve_list = calloc(rule_resolve_num + 1, sizeof(*rule_resolve_list));
 	size_t i = 0;
 	for (rule_cur = rule_begin.next; i < rule_resolve_num; rule_cur = rule_cur->next) {
@@ -560,6 +566,7 @@ struct rule *match_rule(char const *host, uint16_t port) {
 	NEXT_RULE:
 		rule = rule->next;
 	}
+	assert("can't be reached here");
 	return NULL;
 }
 
