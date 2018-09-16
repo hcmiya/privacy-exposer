@@ -30,32 +30,39 @@ privacy-exposer [-p pidfile] [-l loglevel] [-r rule-config] [bind-addr bind-port
 ; セミコロン以降はコメント
 ; ルールは上から順番に検査されます
 
-; 宛先ホスト末尾が.onionの場合はlocalhost:9050へsocks5で接続
-host  .onion          socks5        localhost    9050
+; 宛先ドメインがonionの場合、言い換えるとTLDがonionの場合はlocalhost:9050へsocks5で接続
+domain  onion  socks5  localhost  9050
 
-; 宛先ホスト末尾が.i2p且つポートが80の場合は192.168.3.1:4447へsocks5で接続
-host  .i2p       #80  socks5        192.168.3.1  4447
+; 宛先ドメインがi2p且つポートが80の場合は192.168.3.1:4447へsocks5で接続
+domain  i2p  #80  socks5  192.168.3.1  4447
 
 ; 宛先ホストがlocalhostに一致するときは接続を拒否
-host  localhost       deny
+host  localhost  deny
 
-; 宛先ホストがfoo.exampleに一致するときはこのサーバーから直接接続
+; 宛先ホストがfoo.exampleに一致するときはこのサーバーから直接接続。
+; www.foo.exampleにはマッチしない
 host  foo.example
 
+; 宛先ドメインがfunimation.exampleの場合、localhost:9050へsock5で接続した後
+; さらにus.proxy.example:8080へHTTP CONNETCTで接続
+domain  funimation.example  socks5  localhost  9050  http-connect  us.proxy.example  8080
+
 ; 宛先が任意のホストでポートが80または443のときは[2001:db8::1]:8118へHTTP CONNETCTで接続
-host  #80,443         http-connect  2001:db8::1  8118
+host  #80,443  http-connect  2001:db8::1  8118
 
 ; 任意の宛先、任意のポートのときは接続を拒否
-all                   deny
+all  deny
 ```
 
 `-p`を指定すると`pidfile`にPIDを書き込んだ上でデーモン化します。
 
 ## 名称について
 
-privacy-exposerは通常のプロクシとして振る舞いつつTor/I2P上のサイトに対してのみそれらのプロクシへ中継させたいという動機から作られました。通常の用途でこのような動作をするプロクシを使うと、互いのネットワーク同士で秘匿すべき情報がクライアントでは分け隔てなく取り扱えることとなり、重大な情報漏洩に繋がる可能性があります。その可能性を示唆するものとしてprivacy-expoerという名称が付けられています。
+privacy-exposerは通常のプロクシとして振る舞いつつTor/I2P上のサイトに対してのみそれらのプロクシへ中継させたいという動機から作られました。通常の用途でこのような動作をするプロクシを使うと、互いのネットワーク同士で秘匿すべき情報がクライアントでは分け隔てなく取り扱えることとなり、重大な情報漏洩に繋がる可能性があります。その可能性を示唆するものとしてprivacy-exposerという名称が付けられています。
 
 現在では、Tor/I2Pと固定的だったルールを自由に変えられるようになり、それら秘匿サービスに依らない振り分けが出来るプロクシとして作られています。
+
+privacy-exposer自体にコンピューターの機密情報を抜き出すようなエクスプロイトが仕掛けられているわけではありません。
 
 ## ライセンス
 
