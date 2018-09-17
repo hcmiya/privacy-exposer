@@ -32,12 +32,15 @@ static size_t rule_resolve_num;
 static struct proxy proxy_begin, *proxy_cur;
 
 static void error(char const *fmt, ...) {
-	fprintf(stderr, "line #%zu: ", lineno);
+	char buf[1536];
+	sprintf(buf, "line #%zu: %s", lineno, fmt);
 	va_list ap;
 	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
+	vpelog(LOG_CRIT, fmt, ap);
 	va_end(ap);
-	putchar('\n');
+	if (!first_worker) {
+		kill(root_process, SIGQUIT);
+	}
 	exit(2);
 }
 
@@ -604,7 +607,7 @@ struct rule *match_rule(char const *host, uint16_t port) {
 	NEXT_RULE:
 		rule = rule->next;
 	}
-	assert("can't be reached here");
+	assert(!"can't be reached here");
 	return NULL;
 }
 

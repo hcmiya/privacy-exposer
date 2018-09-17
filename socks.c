@@ -525,6 +525,8 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 
 	sigprocmask(SIG_UNBLOCK, &sa.sa_mask, NULL);
 
+	if (!first_worker) load_rules();
+
 	int thread_id = 1;
 	for (int live = bind_num; !quitting && live;) {
 		int poll_ret = poll(poll_list, bind_num, -1);

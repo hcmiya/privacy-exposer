@@ -22,7 +22,6 @@
 #include "privacy-exposer.h"
 #include "global.h"
 
-static pid_t root_process;
 static pid_t current_worker;
 static pid_t *worker_list;
 static size_t worker_num = 0; // 基本的に1つ
@@ -117,6 +116,7 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 	atexit(kill_worker);
 
 	need_worker = true;
+	first_worker = true;
 	while (1) {
 		if (need_worker) {
 			pid_t pid = fork();
@@ -136,6 +136,11 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 			current_worker = pid;
 			pelog(LOG_NOTICE, "current worker: %ld", (long)pid);
 			write_worker_pid(pid);
+			if (first_worker) {
+				// 2回目以降は子プロセスでルールを読む
+				delete_rules();
+			}
+			first_worker = false;
 			need_worker = false;
 		}
 
@@ -146,29 +151,30 @@ int worker_loop(struct pollfd *poll_list, int bind_num) {
 			need_worker = true;
 			kill(current_worker, SIGHUP);
 			pelog(LOG_NOTICE, "received SIGHUP. reloading rules");
-			delete_rules();
-			load_rules();
 			need_reload = false;
 		}
 		else if (receive_exit_signal) {
 			// INT, QUIT, TERM
-			bool intr = receive_exit_signal == SIGINT;
+			int st;
 			char const *msg;
 			switch (receive_exit_signal) {
 			case SIGINT:
 				msg = "interrupted";
+				st = 1;
 				break;
 			case SIGQUIT:
 				msg = "quitting";
+				st = 1;
 				break;
 			case SIGTERM:
 				msg = "terminating";
+				st = 0;
 				break;
 			}
 			pelog(LOG_NOTICE, "%s. send workers SIGQUIT", msg);
 			close(pid_pipe[1]);
 			pthread_join(counter_th, NULL);
-			return intr;
+			return st;
 		}
 	}
 	return 0;
