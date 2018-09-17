@@ -20,6 +20,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <assert.h>
+#include <fnmatch.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -309,6 +310,36 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 	return fieldnum_sav - fieldnum;
 }
 
+static size_t parse_rule_fnmatch(char **fields, size_t fieldnum, char const *name, int type) {
+	if (fieldnum < 1) {
+		error("no arguments for %s", name);
+	}
+
+	size_t fieldnum_sav = fieldnum;
+	char const *pattern = *fields++;
+	fieldnum--;
+	if (*pattern == '#') {
+		error("invalid pattern: ", pattern);
+	}
+
+	char *port = *fields;
+	if (port && *port++ == '#') {
+		fields++;
+		fieldnum--;
+	}
+	else port = NULL;
+	uint16_t *port_list;
+	size_t port_num = parse_port(port, &port_list);
+
+	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
+	rule_cur->type = type;
+	rule_cur->u.pattern = strdup(pattern);
+	rule_cur->ports = port_list;
+	rule_cur->port_num = port_num;
+
+	return fieldnum_sav - fieldnum;
+}
+
 static void parse_fields(char **fields, size_t fieldnum) {
 	struct match_table_ {
 		char const *name;
@@ -323,6 +354,7 @@ static void parse_fields(char **fields, size_t fieldnum) {
 		{ "net6", parse_rule_net, rule_net6 },
 		{ "net4-resolve", parse_rule_net, rule_net4_resolve },
 		{ "net6-resolve", parse_rule_net, rule_net6_resolve },
+		{ "fnmatch", parse_rule_fnmatch, rule_fnmatch },
 		{ NULL, NULL, 0 },
 	};
 	struct match_table_ const *mtp = match_table;
@@ -565,6 +597,9 @@ struct rule *match_rule(char const *host, uint16_t port) {
 				if (match_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr) && match_port(port, rule->ports, rule->port_num)) return rule;
 			}
 			break;
+			case rule_fnmatch:
+				if (fnmatch(rule->u.pattern, host, 0) == 0 && match_port(port, rule->ports, rule->port_num)) return rule;
+				break;
 		}
 	NEXT_RULE:
 		rule = rule->next;

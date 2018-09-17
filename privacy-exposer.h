@@ -18,6 +18,7 @@ struct rule {
 		rule_net6,
 		rule_net4_resolve,
 		rule_net6_resolve,
+		rule_fnmatch,
 	} type;
 	union {
 		struct {
@@ -28,6 +29,7 @@ struct rule {
 			uint8_t cidr;
 			uint8_t addr[16];
 		} net;
+		char *pattern;
 	} u;
 	uint16_t *ports;
 	size_t port_num;
