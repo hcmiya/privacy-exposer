@@ -60,6 +60,73 @@ static int init(int argc, char **argv) {
 	return optind;
 }
 
+struct pollfd *do_listen(char **argv, int *bind_num_ret) {
+	struct pollfd *poll_list = NULL;
+	int bind_num = 0;
+	while (*argv) {
+		char const *bind_addr = *argv++;
+		if (!*argv) {
+			pelog(LOG_WARNING, "lacks binding port for %s. skipping", bind_addr);
+			break;
+		}
+		char const *bind_port = *argv++;
+
+		struct addrinfo *res;
+		int gai_ret = getaddrinfo(bind_addr, bind_port, &(struct addrinfo) {
+			.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
+			.ai_family = AF_UNSPEC,
+			.ai_socktype = SOCK_STREAM,
+			.ai_protocol = 6,
+		}, &res);
+		if (gai_ret) {
+			pelog(LOG_CRIT, "%s: bind name error: %s", bind_addr, gai_strerror(gai_ret));
+			continue;
+		}
+
+		for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
+			char addr[64];
+			char txtport[6];
+			getnameinfo(rp->ai_addr, rp->ai_addrlen, addr, 58, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
+			sprintf(addr + strlen(addr), "#%s", txtport);
+			int fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+			if (fd < 0) {
+				pelog(LOG_ERR, "failed to create socket: %s: %s", addr, strerror(errno));
+				continue;
+			}
+			setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
+
+			int bind_ret = bind(fd, rp->ai_addr, rp->ai_addrlen);
+			if (bind_ret) {
+				pelog(LOG_ERR, "failed to bind: %s: %s", addr, strerror(errno));
+				close(fd);
+			}
+			else {
+				if (listen(fd, 10) < 0) {
+					pelog(LOG_ERR, "failed to listen: %s: %s", addr, strerror(errno));
+					close(fd);
+				}
+				else {
+					if (bind_num % 8 == 0) {
+						struct pollfd *tmp = realloc(poll_list, sizeof(*poll_list) * (bind_num + 8));
+						poll_list = tmp;
+					}
+					poll_list[bind_num].fd = fd;
+					poll_list[bind_num].events = POLLIN;
+					pelog(LOG_NOTICE, "listen: %s", addr);
+					bind_num++;
+				}
+			}
+		}
+		freeaddrinfo(res);
+	}
+	if (!bind_num) {
+		pelog(LOG_CRIT, "sockets not created. quitting");
+		return NULL;
+	}
+	*bind_num_ret = bind_num;
+	return poll_list;
+}
+
 static void daemonize() {
 	FILE *pidfp = fopen(pidfile, "w");
 	if (!pidfp) {
@@ -121,64 +188,18 @@ int worker_loop(struct pollfd *poll_list, int bind_num);
 
 int main(int argc, char **argv) {
 	int argstart = init(argc, argv);
-	char *bind_addr, *bind_port;
-	if (argv[argstart]) {
-		bind_addr = argv[argstart];
-		bind_port = argv[argstart + 1] ? argv[argstart + 1] : "9000";
-	}
-	else {
-		bind_addr = "localhost";
-		bind_port = "9000";
+	argc -= argstart;
+	argv += argstart;
+
+	char *args_default[] = { "localhost", "9000", NULL };
+	if (argc < 2) {
+		if (argc == 1) args_default[0] = *argv;
+		argv = args_default;
 	}
 
-	struct addrinfo *res;
-	int gai_ret = getaddrinfo(bind_addr, bind_port, &(struct addrinfo) {
-		.ai_flags = AI_PASSIVE | AI_NUMERICSERV,
-		.ai_family = AF_UNSPEC,
-		.ai_socktype = SOCK_STREAM,
-		.ai_protocol = 6,
-	}, &res);
-	if (gai_ret) {
-		pelog(LOG_CRIT, "bind name error: %s", gai_strerror(gai_ret));
-		return 1;
-	}
-
-	struct pollfd poll_list[16];
-	int bind_num = 0;
-	for (struct addrinfo *rp = res; rp && bind_num < 16; rp = rp->ai_next) {
-		char addr[64];
-		char txtport[6];
-		getnameinfo(rp->ai_addr, rp->ai_addrlen, addr, 58, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
-		sprintf(addr + strlen(addr), "#%s", txtport);
-		poll_list[bind_num].fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-		setsockopt(poll_list[bind_num].fd, SOL_SOCKET, SO_REUSEADDR, (int[]){1}, sizeof(int));
-		if (poll_list[bind_num].fd < 0) {
-			pelog(LOG_ERR, "failed to create socket: %s: %s", addr, strerror(errno));
-			continue;
-		}
-
-		int bind_ret = bind(poll_list[bind_num].fd, rp->ai_addr, rp->ai_addrlen);
-		if (bind_ret) {
-			pelog(LOG_ERR, "failed to bind: %s: %s", addr, strerror(errno));
-			close(poll_list[bind_num].fd);
-		}
-		else {
-			if (listen(poll_list[bind_num].fd, 20) < 0) {
-				pelog(LOG_ERR, "failed to listen: %s: %s", addr, strerror(errno));
-				close(poll_list[bind_num].fd);
-			}
-			else {
-				poll_list[bind_num].events = POLLIN;
-				pelog(LOG_NOTICE, "listen: %s", addr);
-				bind_num++;
-			}
-		}
-	}
-	freeaddrinfo(res);
-	if (!bind_num) {
-		pelog(LOG_CRIT, "sockets not created");
-		return 1;
-	}
+	int bind_num;
+	struct pollfd *poll_list = do_listen(argv, &bind_num);
+	if (!poll_list) return 1;
 
 	if (pidfile) {
 		daemonize();
