@@ -21,10 +21,10 @@ CFLAGS=-DNDEBUG make
 次のコマンドでSOCKS5サーバーが起動します。`bind-addr`、`bind-port`が省略されたときの初期値はそれぞれ`localhost`、`9000`です。
 
 ```
-privacy-exposer [-p pidfile] [-l loglevel] [-r rule-config] [bind-addr bind-port]
+privacy-exposer [-p pidfile] [-l loglevel] [-r rule-config] [bind-addr bind-port]...
 ```
 
-`-r`で、宛先に応じたプロクシ接続のルールが書かれたファイルを指定します。書式は以下のサンプルを見て雰囲気を感じ取ってください。
+`-r`で、宛先に応じたプロクシ接続のルールが書かれたファイルを指定します。書式は[ウィキ](https://github.com/hcmiya/privacy-exposer/wiki/%E3%83%AB%E3%83%BC%E3%83%AB%E3%83%95%E3%82%A1%E3%82%A4%E3%83%AB%E6%96%87%E6%B3%95)を参照してください。以下に使用例を示します。
 
 ```
 ; セミコロン以降はコメント
@@ -36,22 +36,14 @@ domain  onion  socks5  localhost  9050
 ; 宛先ドメインがi2p且つポートが80の場合は192.168.3.1:4447へsocks5で接続
 domain  i2p  #80  socks5  192.168.3.1  4447
 
-; 宛先ホストがlocalhostに一致するときは接続を拒否
+; 宛先ホストがlocalhostや、名前解決後を含むネットワークがループバックアドレスに一致するときは接続を拒否
+net6-resolve  ::1/128  deny
+net4-resolve  127.0.0.0/8  deny
 host  localhost  deny
-
-; 宛先ホストがfoo.exampleに一致するときはこのサーバーから直接接続。
-; www.foo.exampleにはマッチしない
-host  foo.example
 
 ; 宛先ドメインがfunimation.exampleの場合、localhost:9050へsock5で接続した後
 ; さらにus.proxy.example:8080へHTTP CONNETCTで接続
 domain  funimation.example  socks5  localhost  9050  http-connect  us.proxy.example  8080
-
-; 宛先が任意のホストでポートが80または443のときは[2001:db8::1]:8118へHTTP CONNETCTで接続
-host  #80,443  http-connect  2001:db8::1  8118
-
-; 任意の宛先、任意のポートのときは接続を拒否
-all  deny
 ```
 
 `-p`を指定すると`pidfile`にPIDを書き込んだ上でデーモン化します。
