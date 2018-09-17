@@ -128,6 +128,57 @@ void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
+static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
+	struct pollfd pfd = {
+		.fd = fd,
+		.events = POLLOUT,
+	};
+	int timeout = sa->sa_family == AF_INET6 ? 3000 : 8000;
+	int origmode = fcntl(fd, F_GETFL);
+	fcntl(fd, F_SETFL, origmode | O_NONBLOCK);
+
+	for (;;) {
+		if (!connect(fd, sa, len)) {
+			break;
+		}
+		int error;
+		switch (errno) {
+		case EINPROGRESS:
+			error = 0; break;
+		case ENETUNREACH:
+			error = -3; break;
+		case EHOSTUNREACH:
+		case ETIMEDOUT:
+			error = -4; break;
+		case ECONNREFUSED:
+			error = -5; break;
+		default:
+			error = -1; break;
+		}
+		if (error) {
+			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
+			return error;
+		}
+
+		int pret = poll(&pfd, 1, 6000);
+		if (pret == 0) {
+			pelog_th(LOG_INFO, "upstream: connect(): timed out (%dms)", timeout);
+			return -4;
+		}
+		else if (pret == -1) {
+			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
+			return -1;
+		}
+		else if (!(pfd.revents & POLLOUT)) {
+			pelog_th(LOG_INFO, "upstream: connect(): error on poll()");
+			return -1;
+		}
+	}
+
+	fcntl(fd, F_SETFL, origmode);
+	return 0;
+}
+
 static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
 	assert(rule);
 
@@ -224,28 +275,17 @@ REDO:
 			pelog_th(LOG_DEBUG, "upstream: creating connection: %s", straddr);
 
 			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+			int err;
 			if (fd != -1) {
-				if (!connect(fd, rp->ai_addr, rp->ai_addrlen)) {
-					break;
-				}
-				switch (errno) {
-				case ENETUNREACH:
-					fd = -3; break;
-				case EHOSTUNREACH:
-				case ETIMEDOUT:
-					fd = -4; break;
-				case ECONNREFUSED:
-					fd = -5; break;
-				default:
-					fd = -1; break;
-				}
-				pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
+				err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen);
+				if (!err) break;
 			}
 			else {
 				pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
 			}
 			close(fd);
 			tls->dest = -1;
+			fd = err;
 		}
 	}
 	if (!rp && test_net && !matched_ipv4 && !matched_ipv6) {
