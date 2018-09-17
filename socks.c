@@ -559,6 +559,7 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 		}
 	}
 	pelog(LOG_NOTICE, "received SIGHUP. %zu connections are retained until close", connection_num);
+	write(count_pipe[1], (uint8_t[]){0}, 1);
 	pthread_join(count_th, NULL);
 	pelog(LOG_NOTICE, "exited gracefully");
 	return 0;
