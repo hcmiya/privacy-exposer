@@ -1,6 +1,4 @@
 #!/sbin/openrc-run
-# Copyright 1999-2018 Gentoo Foundation
-# Distributed under the terms of the GNU General Public License v2
 
 command=/usr/local/bin/privacy-exposer
 pidfile="/run/privacy-exposer.pid"
