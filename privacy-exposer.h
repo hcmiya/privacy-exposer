@@ -3,7 +3,10 @@
 #include <sys/socket.h>
 
 struct petls {
-	char reqhost[262], id[9];
+	char reqhost[262]; // ホスト名最長255 + '#' + ポート番号 + '\0'
+	char id[9];
+	uint8_t rtnbuf[262]; // socks5返答最長
+	size_t rtnlen;
 	int src, dest;
 	struct timespec btime;
 };

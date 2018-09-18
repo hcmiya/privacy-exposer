@@ -48,19 +48,10 @@ static void fail(int type) {
 	// -1 ブツ切り
 	// 0 認証情報取得中
 	// >0 その値
-	struct petls *tls = pthread_getspecific(sock_cleaner);
-	int src = tls->src;
-	char buf[] = "\x5\xff\x0\x3\x07-error-\x0\x0";
-	switch(type) {
-	case -1:
-		break;
-	case 0:
-		send(src, buf, 2, MSG_NOSIGNAL);
-		break;
-	default:
-		buf[1] = type;
-		send(src, buf, 14, MSG_NOSIGNAL);
-		break;
+	if (type >= 0) {
+		struct petls *tls = pthread_getspecific(sock_cleaner);
+		tls->rtnbuf[1] = type ? type : 0xff;
+		send(tls->src, tls->rtnbuf, tls->rtnlen, MSG_NOSIGNAL);
 	}
 	pthread_exit(NULL);
 }
@@ -330,6 +321,10 @@ static int parse_header(struct petls *tls) {
 	// 「認証無し」の接続を受け付けた
 	write_header(src, "\x5\x0", 2);
 
+	// fail()した時の返答
+	memcpy(tls->rtnbuf, "\x5\x0\x0\x1", 4);
+	tls->rtnlen = 10;
+
 	// 接続先要求の情報を得る
 	read_header(src, buf, 4, timeout_read_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
@@ -387,6 +382,13 @@ static int parse_header(struct petls *tls) {
 	uint16_t port = htons(*(uint16_t*)portbin);
 	memcpy(destbin + destlen, portbin, 2);
 	destlen += 2;
+	if (return_bound_address || *destbin == 1) {
+		// 以降でエラーした時用の返答。リクエストのアドレスを返す。
+		// HACK: PrivoxyにIPv4以外の返答をすると死ぬので、-fがありIPv4でない時には固定のバイト列を返す。
+		// cf. https://sourceforge.net/p/ijbswa/bugs/904/
+		memcpy(&tls->rtnbuf[3], destbin, destlen);
+		tls->rtnlen = destlen + 3;
+	}
 	sprintf(destport, "%d", port);
 	sprintf(tls->reqhost, "%s#%s", destname, destport);
 	pelog_th(LOG_DEBUG, "header parsed");
@@ -400,21 +402,21 @@ static int parse_header(struct petls *tls) {
 	uint8_t srcaddrbin[16];
 	uint16_t srcport;
 	int type = retrieve_sock_info(false, upstream, srcname, srcaddrbin, &srcport);
-	size_t addrlen;
-// 	switch(type) {
-// 	case AF_INET: type = 1; addrlen = 4; break;
-// 	case AF_INET6: type = 4; addrlen = 16; break;
-// 	case AF_UNIX: type = 3; addrlen = 5; memcpy(srcaddrbin, "\x4unix", 5); break;
-// 	}
-// 	memcpy(buf, "\x5\x0\x0", 3);
-// 	buf[3] = type;
-// 	memcpy(&buf[4], srcaddrbin, addrlen);
-// 	memcpy(&buf[4 + addrlen], &(uint16_t[]){htons(srcport)}, 2);
-// 	write_header(src, buf, addrlen + 6);
-	// HACK: PrivoxyにIPv4以外の返答をすると死ぬので固定値を返す。
-	// どうせサーバー側のbindの値なぞクライアントは気にしないので当面これで良い。
-	// cf. https://sourceforge.net/p/ijbswa/bugs/904/
-	write_header(src, "\x5\x0\x0\x1\x0\x0\x0\x0\x0\x0", 10);
+	
+	if (return_bound_address) {
+		size_t addrlen;
+		switch(type) {
+		case AF_INET: type = 1; addrlen = 4; break;
+		case AF_INET6: type = 4; addrlen = 16; break;
+		case AF_UNIX: type = 3; addrlen = 5; memcpy(srcaddrbin, "\x4unix", 5); break;
+		}
+		memcpy(buf, "\x5\x0\x0", 3);
+		tls->rtnbuf[3] = type;
+		memcpy(&tls->rtnbuf[4], srcaddrbin, addrlen);
+		memcpy(&tls->rtnbuf[4 + addrlen], (uint16_t[]){htons(srcport)}, 2);
+		tls->rtnlen = addrlen + 6;
+	}
+	write_header(src, tls->rtnbuf, tls->rtnlen);
 
 	// ログ: dest <- relay | relay <- src
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);
@@ -591,6 +593,8 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 				struct petls *tls = calloc(1, sizeof(*tls));
 				tls->src = confd;
 				tls->dest = -1;
+				*tls->rtnbuf = 5;
+				tls->rtnlen = 2;
 				sprintf(tls->id, "%08"PRIX32, thread_id++);
 				strcpy(tls->reqhost, "(?)");
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);

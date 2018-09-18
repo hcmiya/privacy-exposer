@@ -27,7 +27,7 @@ static int init(int argc, char **argv) {
 	int c;
 	long loglevel = -1;
 	char *endp;
-	while ((c = getopt(argc, argv, "p:l:r:")) != -1) {
+	while ((c = getopt(argc, argv, "p:l:r:f")) != -1) {
 		switch (c) {
 		case 'p':
 			pidfile = optarg;
@@ -42,6 +42,9 @@ static int init(int argc, char **argv) {
 			break;
 		case 'r':
 			rule_file_path = optarg;
+			break;
+		case 'f':
+			return_bound_address = false;
 			break;
 		case '?':
 			exit(1);
