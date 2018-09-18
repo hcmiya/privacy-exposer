@@ -32,11 +32,11 @@ static size_t rule_resolve_num;
 static struct proxy proxy_begin, *proxy_cur;
 
 static void error(char const *fmt, ...) {
-	char buf[1536];
-	sprintf(buf, "line #%zu: %s", lineno, fmt);
+	char linefmt[1536];
+	sprintf(linefmt, "line #%zu: %s", lineno, fmt);
 	va_list ap;
 	va_start(ap, fmt);
-	vpelog(LOG_CRIT, fmt, ap);
+	vpelog(LOG_CRIT, linefmt, ap);
 	va_end(ap);
 	if (!first_worker) {
 		kill(root_process, SIGQUIT);
@@ -450,6 +450,10 @@ void parse_rules(FILE *fp) {
 		fields[fieldnum] = NULL;
 		parse_fields(fields, fieldnum);
 	}
+	if (ferror(fp)) {
+		error("%s", strerror(errno));
+	}
+
 	// 最後は全てにマッチするルールで終端させる
 	if (rule_cur == &rule_begin || rule_cur->type != rule_all) {
 		parse_fields((char *[]){"all", NULL}, 1);
@@ -511,10 +515,10 @@ void delete_rules(void) {
 }
 
 void load_rules(void) {
-	if (!rule_file_path) return;
+	assert(rule_file_path);
 	FILE *rfp = fopen(rule_file_path, "r");
 	if (!rfp) {
-		perror(rule_file_path);
+		pelog(LOG_CRIT, "%s: %s", rule_file_path, strerror(errno));
 		exit(1);
 	}
 	parse_rules(rfp);

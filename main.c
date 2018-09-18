@@ -27,7 +27,9 @@ static int init(int argc, char **argv) {
 	int c;
 	long loglevel = -1;
 	char *endp;
-	while ((c = getopt(argc, argv, "p:l:r:f")) != -1) {
+	bool check_rule_only = false;
+
+	while ((c = getopt(argc, argv, "cfl:p:r:")) != -1) {
 		switch (c) {
 		case 'p':
 			pidfile = optarg;
@@ -46,19 +48,26 @@ static int init(int argc, char **argv) {
 		case 'f':
 			return_bound_address = false;
 			break;
+		case 'c':
+			check_rule_only = true;
+			break;
 		case '?':
 			exit(1);
 			break;
 		}
 	}
 
-	if (pidfile && rule_file_path && *rule_file_path != '/') {
+	if (pidfile && *rule_file_path != '/') {
 		fprintf(stderr, "rules file must be specified by full path in daemon mode\n");
 		exit(1);
 	}
+	if (check_rule_only) {
+		loglevel = 2;
+	}
 
-	pelog_open(!!pidfile, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
+	pelog_open(!!pidfile && !check_rule_only, loglevel != -1 ? loglevel : pidfile ? 5 : 7);
 	load_rules();
+	if (check_rule_only) exit(0);
 
 	return optind;
 }

@@ -1,17 +1,28 @@
 #!/sbin/openrc-run
 
+RULES_FILE="${RULES_FILE:-/var/lib/privacy-exposer/rules.conf}"
+BINDS="${BINDS:-localhost 9000}"
+
 command=/usr/local/bin/privacy-exposer
 pidfile="/run/privacy-exposer.pid"
-command_args="-l5 -r /var/lib/privacy-exposer/rules.conf -p $pidfile"
+command_args="-l5 -r \"$RULES_FILE\" -p $pidfile -- $BINDS"
 
-extra_started_commands=reload
+extra_started_commands="reload"
+extra_commands="configtest"
 
 depend() {
-	need net.lo
+	need net
 }
 
 reload() {
+	configtest || return 1
 	ebegin "Reloading rule set"
 	kill -s HUP $(<$pidfile)
 	eend $?
+}
+
+configtest() {
+	ebegin "Checking rule set"
+	$command -c -r "$RULES_FILE"
+	eend $? "Failed"
 }

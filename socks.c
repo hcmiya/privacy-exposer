@@ -172,11 +172,9 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
 
 static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
 	assert(rule);
+	pelog_th(LOG_DEBUG, "apply rule #%zu for %s", rule->idx, host);
 
-	pelog_th(LOG_DEBUG, "being checked %s", host);
 	bool host_is_ipaddr = false;
-
-	pelog_th(LOG_DEBUG, "apply rule #%zu", rule->idx);
 	switch (rule->type) {
 	case rule_net4:
 	case rule_net4_resolve:
@@ -461,7 +459,7 @@ void *do_relay(void *pp_) {
 		ssize_t readlen = recv(pp->r, buf, buflen, 0);
 		if (readlen == -1) {
 			if (errno == EINTR) continue;
-			pelog_relay(LOG_INFO, pp->tls, "recv %s: error: %s", pp->rname, strerror(errno));
+			pelog_relay(LOG_INFO, pp->tls, "recv %s: %s", pp->rname, strerror(errno));
 			break;
 		} else if (readlen == 0) {
 			break;
@@ -474,7 +472,7 @@ void *do_relay(void *pp_) {
 			ssize_t writelen = send(pp->w, p, readlen, MSG_NOSIGNAL);
 			if (writelen == -1) {
 				if (errno == EINTR) continue;
-				pelog_relay(LOG_INFO, pp->tls, "send %s: send(): %s", pp->wname, strerror(errno));
+				pelog_relay(LOG_INFO, pp->tls, "send %s: %s", pp->wname, strerror(errno));
 				goto CLOSE;
 			}
 //			pelog_relay(LOG_DEBUG, pp->id, "send %s: %zd in %zd", pp->wname, writelen, readlen);
@@ -504,6 +502,7 @@ void *do_socks(void *tls_) {
 	retrieve_sock_info(false, src, accept_local, NULL, &port_local);
 	retrieve_sock_info(true, src, accept_remote, NULL, &port_remote);
 	pelog(LOG_DEBUG, "%s: accept: %s#%d <- %s#%d", tls->id, accept_local, port_local, accept_remote, port_remote);
+	sprintf(tls->reqhost, "(req from %s)", accept_remote);
 
 	clock_gettime(CLOCK_REALTIME, &tls->btime);
 	int upstream = parse_header(tls);
@@ -574,7 +573,8 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 	if (!first_worker) load_rules();
 
 	int thread_id = 1;
-	for (int live = bind_num; !quitting && live;) {
+	int live = bind_num;
+	while (!quitting && live) {
 		int poll_ret = poll(poll_list, bind_num, -1);
 		if (poll_ret < 0) {
 			if (errno == EINTR) break;
@@ -596,19 +596,24 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 				*tls->rtnbuf = 5;
 				tls->rtnlen = 2;
 				sprintf(tls->id, "%08"PRIX32, thread_id++);
-				strcpy(tls->reqhost, "(?)");
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 				write(count_pipe[1], (uint8_t[]){1}, 1);
 			}
 			else if (poll_list[i].revents) {
 				pelog(LOG_ERR, "accept() (from poll())");
 				poll_ret--;
+				// FIXME: ソケットが死んだらどうしたらいい?
 				poll_list[i].fd = ~poll_list[i].fd;
 				live--;
 			}
 		}
 	}
-	pelog(LOG_NOTICE, "received SIGHUP. %zu connections are retained until close", connection_num);
+	if (quitting) {
+		pelog(LOG_NOTICE, "received SIGHUP. %zu connections are retained until close", connection_num);
+	}
+	else if (!live) {
+		pelog(LOG_NOTICE, "all sockets died?");
+	}
 	write(count_pipe[1], (uint8_t[]){0}, 1);
 	pthread_join(count_th, NULL);
 	pelog(LOG_NOTICE, "exited gracefully");
