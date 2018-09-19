@@ -129,7 +129,7 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
 	fcntl(fd, F_SETFL, origmode | O_NONBLOCK);
 
 	for (;;) {
-		if (!connect(fd, sa, len)) {
+		if (!connect(fd, sa, len) || errno == EISCONN) {
 			break;
 		}
 		int error;
@@ -151,7 +151,7 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
 			return error;
 		}
 
-		int pret = poll(&pfd, 1, 6000);
+		int pret = poll(&pfd, 1, timeout);
 		if (pret == 0) {
 			pelog_th(LOG_INFO, "upstream: connect(): timed out (%dms)", timeout);
 			return -4;
