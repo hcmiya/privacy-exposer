@@ -133,18 +133,16 @@ static bool http_header_char(int c) {
 }
 
 static int next_http_connect(char const *host, char const *port, int upstream, int idx) {
-	size_t const buflen = 512;
+	size_t const buflen = 768;
 	char buf[buflen];
 	{
 		size_t wlen;
 		bool ipv6 = strchr(host, ':');
-		char const *hostopen = ipv6 ? "[" : "";
-		char const *hostclose = ipv6 ? "]" : "";
+		char httphost[264];
+		sprintf(httphost, "%s%s%s:%s", ipv6 ? "[" : "", host, ipv6 ? "]" : "", port);
 		// CONNECT host.example:80 HTTP/1.1
-		// Host: host.example
-		wlen = sprintf(buf, "CONNECT %s%s%s:%s HTTP/1.1\r\n", hostopen, host, hostclose, port);
-		write_header(upstream, buf, wlen);
-		wlen = sprintf(buf, "Host: %s%s%s\r\n\r\n", hostopen, host, hostclose);
+		// Host: host.example:80
+		wlen = sprintf(buf, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", httphost, httphost);
 		write_header(upstream, buf, wlen);
 
 		// HTTP/1.1 200 OK
