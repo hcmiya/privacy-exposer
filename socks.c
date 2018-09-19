@@ -120,24 +120,17 @@ void write_header(int fd, void const *buf_, size_t left) {
 }
 
 static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
-	struct pollfd pfd = {
-		.fd = fd,
-		.events = POLLOUT,
+	struct timeval tmo = {
+		.tv_sec = sa->sa_family == AF_INET6 ? 3 : 8,
 	};
-	int timeout = sa->sa_family == AF_INET6 ? 3000 : 8000;
-	int origmode = fcntl(fd, F_GETFL);
-	fcntl(fd, F_SETFL, origmode | O_NONBLOCK);
+	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
 
-	for (;;) {
-		if (!connect(fd, sa, len) || errno == EISCONN) {
-			break;
-		}
-		int error;
+	int error = 0;
+	if (connect(fd, sa, len)) {
 		switch (errno) {
-		case EINPROGRESS:
-			error = 0; break;
 		case ENETUNREACH:
 			error = -3; break;
+		case EINPROGRESS:
 		case EHOSTUNREACH:
 		case ETIMEDOUT:
 			error = -4; break;
@@ -146,28 +139,11 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
 		default:
 			error = -1; break;
 		}
-		if (error) {
-			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
-			return error;
-		}
-
-		int pret = poll(&pfd, 1, timeout);
-		if (pret == 0) {
-			pelog_th(LOG_INFO, "upstream: connect(): timed out (%dms)", timeout);
-			return -4;
-		}
-		else if (pret == -1) {
-			pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
-			return -1;
-		}
-		else if (!(pfd.revents & POLLOUT)) {
-			pelog_th(LOG_INFO, "upstream: connect(): error on poll()");
-			return -1;
-		}
+		pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
 	}
-
-	fcntl(fd, F_SETFL, origmode);
-	return 0;
+	tmo.tv_sec = 0;
+	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
+	return error;
 }
 
 static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
@@ -267,7 +243,10 @@ REDO:
 			int err;
 			if (fd != -1) {
 				err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen);
-				if (!err) break;
+				if (!err) {
+					pelog_th(LOG_DEBUG, "upstream: got connection: %s", straddr);
+					break;
+				}
 			}
 			else {
 				pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
