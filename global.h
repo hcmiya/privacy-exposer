@@ -23,7 +23,9 @@ GLOBAL int const timeout_greet GLOBAL_VAL(3000);
 GLOBAL int const timeout_read_short GLOBAL_VAL(1000);
 GLOBAL int const timeout_write GLOBAL_VAL(500);
 #else
-GLOBAL int const timeout_greet GLOBAL_VAL(-1);
-GLOBAL int const timeout_read_short GLOBAL_VAL(-1);
-GLOBAL int const timeout_write GLOBAL_VAL(-1);
+#define testtoms 0
+GLOBAL int const timeout_greet GLOBAL_VAL(testtoms);
+GLOBAL int const timeout_read_short GLOBAL_VAL(testtoms);
+GLOBAL int const timeout_write GLOBAL_VAL(testtoms);
+#undef testtoms
 #endif

@@ -61,37 +61,44 @@ static void fail(int type) {
 }
 
 void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet) {
+	// timeoutはミリ秒
 	uint8_t *buf = buf_;
 	char const * const errorat = atgreet ? "greet" : "request";
-	struct pollfd po = {
-		.fd = fd,
-		.events = POLLIN,
+
+	struct timeval origtmo, tmo = {
+		.tv_sec = timeout / 1000,
+		.tv_usec = (timeout % 1000) * 1000,
 	};
+	getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &origtmo, (socklen_t[]){sizeof(origtmo)});
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tmo, sizeof(tmo));
+
 	while (left) {
-		int poll_ret = poll(&po, 1, timeout);
-		if (poll_ret < 0) {
-			if (errno == EINTR) continue;
-		}
-		if (poll_ret == 0) {
-			pelog_th(LOG_INFO, "%s: recv() timed out", errorat);
-			fail(atgreet ? -1 : 3);
-		}
-		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog_th(LOG_INFO, "%s: recv() error (by poll)", errorat);
-			fail(atgreet ? -1 : 5);
-		}
 		ssize_t readlen = recv(fd, buf, left, 0);
 		if (readlen < 0) {
-			pelog_th(LOG_INFO, "%s: recv(): %s", errorat, strerror(errno));
-			fail(atgreet ? -1 : 5);
+			if (errno == EINTR) continue;
+
+			pelog_th(LOG_INFO, "%s: %s", errorat, strerror(errno));
+			if (atgreet) {
+				fail(-1);
+			}
+			int error;
+			switch (errno) {
+			case ECONNREFUSED:
+				error = 5;
+				break;
+			default:
+				error = errno == EAGAIN || errno == EWOULDBLOCK ? 4 : 1; break;
+			}
+			fail(error);
 		}
-		if (readlen == 0) { //EOF
+		else if (readlen == 0) {
 			pelog_th(LOG_INFO, "%s: unexpected eof", errorat);
-			fail(atgreet ? -1 : 5);
+			fail(atgreet ? -1 : 1);
 		}
 		left -= readlen;
 		buf += readlen;
 	}
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &origtmo, sizeof(origtmo));
 }
 
 void write_header(int fd, void const *buf_, size_t left) {
