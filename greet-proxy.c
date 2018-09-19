@@ -92,7 +92,7 @@ static int next_socks4a(char const *host, char const *port, int upstream, int id
 	write_header(upstream, buf, 9 + strlen(host) + 1);
 
 	// ver, result, ign
-	read_header(upstream, buf, 8, timeout_read_short, false);
+	read_header(upstream, buf, 8, timeout_read_upstream, false);
 	if (buf[0] != 0 || buf[1] != 90) {
 		pelog_th(LOG_DEBUG, "proxy #%d: error status", buf[1]);
 		return 1;
