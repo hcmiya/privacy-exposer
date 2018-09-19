@@ -51,7 +51,11 @@ static void fail(int type) {
 	if (type >= 0) {
 		struct petls *tls = pthread_getspecific(sock_cleaner);
 		tls->rtnbuf[1] = type ? type : 0xff;
+		pelog_th(LOG_DEBUG, "close with error status %d", tls->rtnbuf[1]);
 		send(tls->src, tls->rtnbuf, tls->rtnlen, MSG_NOSIGNAL);
+	}
+	else {
+		pelog_th(LOG_DEBUG, "close without response");
 	}
 	pthread_exit(NULL);
 }
@@ -92,25 +96,9 @@ void read_header(int fd, void *buf_, size_t left, int timeout, bool atgreet) {
 
 void write_header(int fd, void const *buf_, size_t left) {
 	uint8_t const *buf = buf_;
-	struct pollfd po = {
-		.fd = fd,
-		.events = POLLOUT,
-	};
 	while (left) {
-		int poll_ret = poll(&po, 1, timeout_write);
-		if (poll_ret < 0) {
-			if (errno == EINTR) continue;
-		}
-		if (poll_ret == 0) {
-			pelog_th(LOG_INFO, "send() timed out");
-			fail(-1);
-		}
-		if (po.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			pelog_th(LOG_INFO, "send() error (by poll)");
-			fail(-1);
-		}
 		ssize_t writelen = send(fd, buf, left, MSG_NOSIGNAL);
-		if (writelen < 0) {
+		if (writelen < 0 && errno != EINTR) {
 			pelog_th(LOG_INFO, "send(): %s", strerror(errno));
 			fail(-1);
 		}
@@ -275,6 +263,9 @@ static int parse_header(struct petls *tls) {
 	uint8_t buf[768];
 	int src = tls->src;
 
+	// ヘッダ返信のタイムアウトは常に500ms
+	setsockopt(src, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){.tv_usec = 500000}, sizeof(struct timeval));
+
 	read_header(src, buf, 2, timeout_greet, true);
 	// [0]: プロトコルバージョン
 	if (buf[0] != 5) {
@@ -394,6 +385,9 @@ static int parse_header(struct petls *tls) {
 		tls->rtnlen = addrlen + 6;
 	}
 	write_header(src, tls->rtnbuf, tls->rtnlen);
+
+	// 返信のタイムアウトを元に戻す
+	setsockopt(src, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){0}, sizeof(struct timeval));
 
 	// ログ: dest <- relay | relay <- src
 	retrieve_sock_info(true, upstream, destname, srcaddrbin, &port);

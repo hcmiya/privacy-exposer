@@ -42,6 +42,7 @@ static int next_socks5(char const *host, char const *port, int upstream, int idx
 	write_header(upstream, "\x5\x1\x0", 3);
 	read_header(upstream, buf, 2, timeout_read_short, false);
 	if (buf[0] != 5 || buf[1] != 0) {
+		pelog_th(LOG_DEBUG, "proxy #%d: receive non-socks5 response", idx);
 		return 5;
 	}
 
@@ -93,8 +94,10 @@ static int next_socks4a(char const *host, char const *port, int upstream, int id
 	// ver, result, ign
 	read_header(upstream, buf, 8, timeout_read_short, false);
 	if (buf[0] != 0 || buf[1] != 90) {
+		pelog_th(LOG_DEBUG, "proxy #%d: error status", buf[1]);
 		return 1;
 	}
+	return 0;
 }
 
 static ssize_t http_peek(int upstream, void *buf, size_t len) {
@@ -259,6 +262,8 @@ static int next_http_connect(char const *host, char const *port, int upstream, i
 int greet_next_proxy(char const *host, char const *port, struct proxy *proxy, int upstream) {
 	if (upstream < 0) return upstream;
 
+	setsockopt(upstream, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){.tv_usec = 500000}, sizeof(struct timeval));
+
 	int idx = 1;
 	while (proxy) {
 		char const *nexthost, *nextport;
@@ -310,6 +315,9 @@ int greet_next_proxy(char const *host, char const *port, struct proxy *proxy, in
 		proxy = proxy->next;
 		idx++;
 	}
+
+	setsockopt(upstream, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){0}, sizeof(struct timeval));
+
 	return upstream;
 }
 
