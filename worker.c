@@ -18,6 +18,7 @@
 #include <search.h>
 #include <syslog.h>
 #include <pthread.h>
+#include <poll.h>
 
 #include "privacy-exposer.h"
 #include "global.h"

@@ -1,4 +1,7 @@
-#include <poll.h>
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ - 0 < 199901L
+#error "Requires C99 or later compiler to build"
+#endif
+
 #include <stdint.h>
 #include <sys/socket.h>
 

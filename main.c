@@ -16,6 +16,7 @@
 #include <syslog.h>
 #include <inttypes.h>
 #include <sys/wait.h>
+#include <poll.h>
 
 #define GLOBAL_MAIN
 #include "privacy-exposer.h"
