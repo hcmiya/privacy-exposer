@@ -15,38 +15,61 @@
 
 static int level = LOG_DEBUG;
 
+static void head(int priority) {
+	int ini;
+	switch (priority) {
+	case LOG_EMERG:  ini = '!'; break;
+	case LOG_ALERT:  ini = 'A'; break;
+	case LOG_CRIT:   ini = 'C'; break;
+	case LOG_ERR:    ini = 'E'; break;
+	case LOG_NOTICE: ini = 'N'; break;
+	case LOG_INFO:   ini = 'I'; break;
+	case LOG_DEBUG:  ini = 'D'; break;
+	}
+	printf("[%ld] %c; ", (long)getpid(), ini);
+}
+
+static void term(void) {
+	// stdoutがディスクフルとかで死んだ時に必要
+	if (putchar('\n') == EOF) {
+		perror("privacy-exposer logger");
+		abort();
+	}
+}
+
 static void pelog_not_syslog(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
-	printf("[%ld] ", (long)getpid());
+	head(priority);
 	va_list ap;
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
-	putchar('\n');
+	term();
 }
 
 static void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 	if (priority > level) return;
 
 	struct petls *tls = pthread_getspecific(sock_cleaner);
-	printf("[%ld] %s %s: %ldms: ", (long)getpid(), tls->id, tls->reqhost, lapse_ms(&tls->btime));
+	head(priority);
+	printf("%s %s: %ldms: ", tls->id, tls->reqhost, lapse_ms(&tls->btime));
 
 	va_list ap;
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
-	putchar('\n');
+	term();
 }
 
 static void vpelog_not_syslog(int priority, char const *fmt, va_list ap) {
 	if (priority > level) return;
-	printf("[%ld] ", (long)getpid());
+	head(priority);
 	va_list copyap;
 	va_copy(copyap, ap);
 	vprintf(fmt, copyap);
 	va_end(copyap);
-	putchar('\n');
+	term();
 }
 
 static void pelog_syslog_th(int priority, char const *fmt, ...) {
