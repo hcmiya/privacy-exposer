@@ -105,7 +105,8 @@ void write_header(int fd, void const *buf_, size_t left) {
 	uint8_t const *buf = buf_;
 	while (left) {
 		ssize_t writelen = send(fd, buf, left, MSG_NOSIGNAL);
-		if (writelen < 0 && errno != EINTR) {
+		if (writelen < 0) {
+			if (errno == EINTR) continue;
 			pelog_th(LOG_INFO, "send(): %s", strerror(errno));
 			fail(-1);
 		}
@@ -114,9 +115,10 @@ void write_header(int fd, void const *buf_, size_t left) {
 	}
 }
 
-static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
+static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len, int timeout_ms) {
 	struct timeval tmo = {
-		.tv_sec = sa->sa_family == AF_INET6 ? 3 : 8,
+		.tv_sec = timeout_ms / 1000,
+		.tv_usec = (timeout_ms % 1000) * 1000,
 	};
 	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
 
@@ -136,7 +138,7 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len) {
 		}
 		pelog_th(LOG_INFO, "upstream: connect(): %s", strerror(errno));
 	}
-	tmo.tv_sec = 0;
+	tmo.tv_sec = tmo.tv_usec = 0;
 	setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tmo, sizeof(tmo));
 	return error;
 }
@@ -199,8 +201,28 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 		return -1;
 	}
 
-	int fd;
+	// タイムアウトの時間を決めるためipv6があるかどうかを調べる
+	// ipv6が壊れている場合に早めにipv4にフォールバックするため
+	bool have_ipv4 = false, have_ipv6 = false;
+	int timeout_ipv4 = 10000, timeout_ipv6 = 2000;
 	struct addrinfo *rp;
+	if (!test_net) {
+		for (rp = res; rp; rp = rp->ai_next) {
+			switch (rp->ai_family) {
+			case AF_INET:
+				have_ipv4 = true;
+				break;
+			case AF_INET6:
+				have_ipv6 = true;
+				break;
+			}
+		}
+	}
+	if (have_ipv6 && !have_ipv4) {
+		timeout_ipv6 = timeout_ipv4;
+	}
+
+	int fd;
 	bool matched_ipv4 = false, matched_ipv6 = false;
 REDO:
 	for (rp = res; rp; rp = rp->ai_next) {
@@ -237,7 +259,7 @@ REDO:
 			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
 			int err;
 			if (fd != -1) {
-				err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen);
+				err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen, rp->ai_family == AF_INET ? timeout_ipv4 : timeout_ipv6);
 				if (!err) {
 					pelog_th(LOG_DEBUG, "upstream: got connection: %s", straddr);
 					break;
