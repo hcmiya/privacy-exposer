@@ -17,6 +17,7 @@
 #include <time.h>
 #include <sys/un.h>
 #include <ctype.h>
+#include <assert.h>
 
 #include "privacy-exposer.h"
 #include "global.h"
@@ -86,3 +87,28 @@ bool simple_host_check(char const *host) {
 	return true;
 }
 
+size_t fgets_bin(char *buf, size_t len, FILE *fp) {
+	assert(buf && fp);
+	static size_t const errval = (size_t)-1;
+	int c;
+	if (len <= 1) {
+		c = fgetc(fp);
+		if (c == EOF) return errval;
+		if (len) {
+			ungetc(c, fp);
+			*buf = '\0';
+		}
+		return 0;
+	}
+
+	char fmt[32];
+	sprintf(fmt, "%%%zu[^\n]%%zn", len - 2);
+	size_t readlen = 0;
+	int ret = fscanf(fp, fmt, buf, &readlen);
+	if (ret == EOF) return errval;
+	c = fgetc(fp);
+	if (!ret && c == EOF) return errval;
+	if (c != EOF) buf[readlen++] = c;
+	buf[readlen] = '\0';
+	return readlen;
+}

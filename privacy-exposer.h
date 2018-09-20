@@ -74,6 +74,7 @@ long lapse_ms(struct timespec *from);
 bool end_with(char const *haystack, char const *needle);
 char *downcase(char *s);
 bool simple_host_check(char const *host);
+size_t fgets_bin(char *buf, size_t len, FILE *fp);
 
 // logger.c
 void pelog_open(bool use_syslog, int loglevel);

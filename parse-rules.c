@@ -419,10 +419,17 @@ void parse_rules(FILE *fp) {
 	rule_resolve_num = 0;
 	size_t const buflen = 1024;
 	char line[buflen];
-	for (lineno = 1; fgets(line, buflen, fp); lineno++) {
-		size_t linelen = strlen(line);
+	lineno = 1;
+
+	for (size_t linelen; (linelen = fgets_bin(line, buflen, fp)) != (size_t)-1; lineno++) {
+		if (linelen != strlen(line)) {
+			error("binary file");
+		}
 		if (linelen == buflen - 1 && line[linelen - 1] != '\n') {
-			exit(2);
+			int c = fgetc(fp);
+			if (c != '\n' && c != EOF) {
+				error("exceeds %zu characters", buflen - 1);
+			}
 		}
 
 		char *p = strchr(line, ';');
