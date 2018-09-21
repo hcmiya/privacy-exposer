@@ -15,7 +15,7 @@ struct petls {
 };
 
 struct rule {
-	size_t idx;
+	ssize_t idx;
 	enum {
 		rule_all,
 		rule_host,
@@ -53,8 +53,10 @@ struct rule {
 				char port[6];
 			} host_port;
 			char *path;
+			uint8_t deny_by;
 		} u;
 		struct proxy *next;
+		bool do_not_free;
 	} *proxy;
 	struct rule *next;
 };
@@ -83,7 +85,6 @@ void pelog_open(bool use_syslog, int loglevel);
 void load_rules(void);
 void delete_rules(void);
 struct rule *match_rule(char const *host, uint16_t port);
-size_t test_net_num(struct rule *rule);
-struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target);
+struct rule *match_net_resolve(ssize_t maxidx, struct sockaddr *target);
 
 // worker.c

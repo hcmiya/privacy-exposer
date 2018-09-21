@@ -27,7 +27,116 @@
 
 static size_t lineno = 1;
 
-static struct rule rule_begin, *rule_cur, **rule_resolve_list;
+// デフォルトで接続を拒否するアドレスたちの為の定義
+static struct proxy const deny_no_route = {
+	.type = proxy_type_deny,
+	.u.deny_by = 3,
+	.do_not_free = true,
+};
+
+#define ALL_PORT_DENY_NO_ROUTE \
+	.ports = (uint16_t[]){0, 65535}, \
+	.port_num = 2, \
+	.proxy = (struct proxy*)&deny_no_route \
+
+static struct rule rule_default[] = {
+	{
+		// fe80::/10
+		.type = rule_net6_resolve,
+		.u.net = {
+			.af = AF_INET6,
+			.cidr = 10,
+			.addr = "\xfe\x80",
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 2001::db8::/32
+		.type = rule_net6_resolve,
+		.u.net = {
+			.af = AF_INET6,
+			.cidr = 32,
+			.addr = "\x20\x01\x0d\xb8",
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 100::/64
+		.type = rule_net6_resolve,
+		.u.net = {
+			.af = AF_INET6,
+			.cidr = 64,
+			.addr = "\x01",
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// ::/96
+		.type = rule_net6_resolve,
+		.u.net = {
+			.af = AF_INET6,
+			.cidr = 96,
+			.addr = "",
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 0.0.0.0/8
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 8,
+			.addr = {0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 169.254.0.0/16
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 16,
+			.addr = {169, 254, 0, 0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 192.0.2.0/24
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 24,
+			.addr = {192, 0, 2, 0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 198.51.100/24
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 24,
+			.addr = {198, 51, 100, 0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
+		// 240.0.0.0/4
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 4,
+			.addr = {240, 0, 0, 0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+};
+#undef ALL_PORT_DENY_NO_ROUTE
+static ssize_t const rule_default_num = sizeof(rule_default) / sizeof(*rule_default);
+static struct rule * const rule_default_end = &rule_default[sizeof(rule_default) / sizeof(*rule_default) - 1];
+// デフォルトで接続を拒否するアドレスたちの為の定義 ここまで
+
+static struct rule *rule_cur, **rule_resolve_list;
 static size_t rule_resolve_num;
 static struct proxy proxy_begin, *proxy_cur;
 
@@ -49,6 +158,18 @@ static int32_t parse_u16(char *s) {
 	unsigned long val = strtoul(s, &endp, 10);
 	if (s == endp || val > 65535) return -1;
 	return (int32_t)val;
+}
+
+static struct proxy *new_proxy_ent(int type) {
+	proxy_cur = (proxy_cur->next = calloc(1, sizeof(*proxy_cur)));
+	proxy_cur->type = type;
+	return proxy_cur;
+}
+
+static struct rule *new_rule_ent(int type) {
+	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
+	rule_cur->type = type;
+	return rule_cur;
 }
 
 static size_t parse_proxy_hostname(char **fields, size_t fieldnum, char *name, int type) {
@@ -75,11 +196,9 @@ static size_t parse_proxy_hostname(char **fields, size_t fieldnum, char *name, i
 	if (val > 65535) {
 		error("invalid port for %s: ", name, fields[1]);
 	}
-	proxy_cur->next = calloc(1, sizeof(*proxy_cur));
-	proxy_cur = proxy_cur->next;
-	proxy_cur->type = type;
-	proxy_cur->u.host_port.name = strdup(*fields);
-	strcpy(proxy_cur->u.host_port.port, fields[1]);
+	struct proxy *proxy = new_proxy_ent(type);
+	proxy->u.host_port.name = strdup(*fields);
+	strcpy(proxy->u.host_port.port, fields[1]);
 	return 2;
 }
 
@@ -93,10 +212,8 @@ static size_t parse_proxy_abs_path(char **fields, size_t fieldnum, char *name, i
 	if (**fields != '/') {
 		error("invalid path for %s: %s", name, *fields);
 	}
-	proxy_cur->next = calloc(1, sizeof(*proxy_cur));
-	proxy_cur = proxy_cur->next;
-	proxy_cur->type = type;
-	proxy_cur->u.path = strdup(*fields);
+	struct proxy *proxy = new_proxy_ent(type);
+	proxy->u.path = strdup(*fields);
 	return 1;
 }
 
@@ -107,7 +224,11 @@ static size_t parse_proxy_deny(char **fields, size_t fieldnum, char *name, int t
 	if (fieldnum > 0) {
 		error("too many arguments for deny");
 	}
-	static struct proxy const deny = { .type = proxy_type_deny };
+	static struct proxy const deny = {
+		.type = proxy_type_deny,
+		.u.deny_by = 2,
+		.do_not_free = true,
+	};
 	proxy_cur->next = (struct proxy*)&deny;
 	return 0;
 }
@@ -217,17 +338,15 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
-	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
-	rule_cur->type = type;
-	rule_cur->u.host.name = strdup(host);
-	rule_cur->ports = port_list;
-	rule_cur->port_num = port_num;
+	struct rule *rule = new_rule_ent(type);
+	rule->u.host.name = strdup(host);
+	rule->ports = port_list;
+	rule->port_num = port_num;
 	return rtn;
 }
 
 static size_t parse_rule_all(char **unused, size_t fieldnum, char const *name, int type) {
-	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
-	rule_cur->type = type;
+	struct rule *rule = new_rule_ent(type);
 	return 0;
 }
 
@@ -302,13 +421,12 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
-	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
-	rule_cur->type = type;
-	rule_cur->u.net.af = addrtype;
-	memcpy(rule_cur->u.net.addr, addr, addrlen);
-	rule_cur->u.net.cidr = cidr;
-	rule_cur->ports = port_list;
-	rule_cur->port_num = port_num;
+	struct rule *rule = new_rule_ent(type);
+	rule->u.net.af = addrtype;
+	memcpy(rule->u.net.addr, addr, addrlen);
+	rule->u.net.cidr = cidr;
+	rule->ports = port_list;
+	rule->port_num = port_num;
 
 	return fieldnum_sav - fieldnum;
 }
@@ -334,11 +452,10 @@ static size_t parse_rule_fnmatch(char **fields, size_t fieldnum, char const *nam
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
-	rule_cur = (rule_cur->next = calloc(1, sizeof(*rule_cur)));
-	rule_cur->type = type;
-	rule_cur->u.pattern = strdup(pattern);
-	rule_cur->ports = port_list;
-	rule_cur->port_num = port_num;
+	struct rule *rule = new_rule_ent(type);
+	rule->u.pattern = strdup(pattern);
+	rule->ports = port_list;
+	rule->port_num = port_num;
 
 	return fieldnum_sav - fieldnum;
 }
@@ -415,8 +532,8 @@ static void parse_fields(char **fields, size_t fieldnum) {
 }
 
 void parse_rules(FILE *fp) {
-	rule_cur = &rule_begin;
-	rule_resolve_num = 0;
+	rule_cur = rule_default_end;
+	rule_resolve_num = rule_default_num;
 	size_t const buflen = 1024;
 	char line[buflen];
 	lineno = 1;
@@ -462,13 +579,13 @@ void parse_rules(FILE *fp) {
 	}
 
 	// 最後は全てにマッチするルールで終端させる
-	if (rule_cur == &rule_begin || rule_cur->type != rule_all) {
+	if (rule_cur == rule_default_end || rule_cur->type != rule_all) {
 		parse_fields((char *[]){"all", NULL}, 1);
 	}
 
 	rule_resolve_list = calloc(rule_resolve_num + 1, sizeof(*rule_resolve_list));
 	size_t i = 0;
-	for (rule_cur = rule_begin.next; i < rule_resolve_num; rule_cur = rule_cur->next) {
+	for (rule_cur = rule_default; i < rule_resolve_num; rule_cur = rule_cur->next) {
 		switch (rule_cur->type) {
 		case rule_net4_resolve:
 		case rule_net6_resolve:
@@ -479,7 +596,7 @@ void parse_rules(FILE *fp) {
 }
 
 void delete_rules(void) {
-	struct rule *r = rule_begin.next;
+	struct rule *r = rule_default_end->next;
 	while (r) {
 		switch (r->type) {
 		case rule_host:
@@ -502,20 +619,15 @@ void delete_rules(void) {
 			}
 
 			p = p->next;
-			switch (r->proxy->type) {
-			case proxy_type_deny:
-				// denyは静的領域を指しているのでfreeしないこと
-				break;
-			default:
+			if (!r->proxy->do_not_free) {
 				free(r->proxy);
-				break;
 			}
 			r->proxy = p;
 		}
 
 		r = r->next;
-		free(rule_begin.next);
-		rule_begin.next = r;
+		free(rule_default_end->next);
+		rule_default_end->next = r;
 	}
 	free(rule_resolve_list);
 	rule_resolve_list = NULL;
@@ -527,6 +639,13 @@ void load_rules(void) {
 	if (!rfp) {
 		pelog(LOG_CRIT, "%s: %s", rule_file_path, strerror(errno));
 		exit(1);
+	}
+	if (first_worker) {
+		size_t i;
+		for (i = 0; i < rule_default_num - 1; i++) {
+			rule_default[i].idx = -rule_default_num + i + 1;
+			rule_default[i].next = &rule_default[i + 1];
+		}
 	}
 	parse_rules(rfp);
 	fclose(rfp);
@@ -550,7 +669,7 @@ static bool match_net(int addrtype, void *target_, void *test_, uint8_t cidr) {
 }
 
 struct rule *match_rule(char const *host, uint16_t port) {
-	struct rule *rule = rule_begin.next;
+	struct rule *rule = rule_default;
 
 	while (rule) {
 		bool rule_matched = false;
@@ -611,9 +730,9 @@ struct rule *match_rule(char const *host, uint16_t port) {
 				if (match_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr) && match_port(port, rule->ports, rule->port_num)) return rule;
 			}
 			break;
-			case rule_fnmatch:
-				if (fnmatch(rule->u.pattern, host, 0) == 0 && match_port(port, rule->ports, rule->port_num)) return rule;
-				break;
+		case rule_fnmatch:
+			if (fnmatch(rule->u.pattern, host, 0) == 0 && match_port(port, rule->ports, rule->port_num)) return rule;
+			break;
 		}
 	NEXT_RULE:
 		rule = rule->next;
@@ -622,24 +741,7 @@ struct rule *match_rule(char const *host, uint16_t port) {
 	return NULL;
 }
 
-size_t test_net_num(struct rule *rule) {
-	// rule に至るまでnet?-resolveをこなすべき数
-	if (!rule) return rule_resolve_num;
-	size_t num = 0;
-	struct rule **r = rule_resolve_list;
-	while ((*r) && (*r)->idx < rule->idx) {
-		switch ((*r)->type) {
-		case rule_net4_resolve:
-		case rule_net6_resolve:
-			num++;
-			break;
-		}
-		r++;
-	}
-	return num;
-}
-
-struct rule *match_net_resolve(size_t maxidx, struct sockaddr *target) {
+struct rule *match_net_resolve(ssize_t maxidx, struct sockaddr *target) {
 	uint8_t *addr;
 	uint16_t port;
 	switch (target->sa_family) {

@@ -145,7 +145,7 @@ static int connect_timeout(int fd, struct sockaddr *sa, socklen_t len, int timeo
 
 static int connect_next(struct petls *tls, char const *host, char const *port, struct rule *rule, bool do_rec) {
 	assert(rule);
-	pelog_th(LOG_DEBUG, "apply rule #%zu for %s", rule->idx, host);
+	pelog_th(LOG_DEBUG, "apply rule #%zd for %s", rule->idx, host);
 
 	bool host_is_ipaddr = false;
 	switch (rule->type) {
@@ -158,13 +158,13 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	}
 	struct proxy *proxy = rule->proxy;
 	// 名前解決が必要で、上流でプロクシを使わない場合のみ net?-resolve マッチを行う
-	bool test_net = do_rec && !host_is_ipaddr && !proxy && test_net_num(rule);
+	bool test_net = do_rec && !host_is_ipaddr && !proxy;
 
 	if (proxy) {
 		switch (proxy->type) {
 		case proxy_type_deny:
-			pelog_th(LOG_INFO, "reject by rule set #%zu", rule->idx);
-			return -2;
+			pelog_th(LOG_INFO, "reject by rule set #%zd with code %d", rule->idx, proxy->u.deny_by);
+			return -proxy->u.deny_by;
 		case proxy_type_unix_socks5:
 			{
 				int sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -231,10 +231,9 @@ REDO:
 
 		if (test_net) {
 			pelog_th(LOG_DEBUG, "upstream: test net: %s", straddr);
-			struct rule *rule_resolve = match_net_resolve(rule ? rule->idx : (size_t)-1, rp->ai_addr);
+			struct rule *rule_resolve = match_net_resolve(rule->idx, rp->ai_addr);
 			if (rule_resolve) {
-				pelog_th(LOG_DEBUG, "upstream: %s: applying new rule set #%zu", straddr, rule_resolve->idx);
-				struct proxy *nrproxy = rule_resolve->proxy;
+				pelog_th(LOG_DEBUG, "upstream: %s: applying new rule set #%zd", straddr, rule_resolve->idx);
 				switch (rp->ai_family) {
 				case AF_INET:
 					matched_ipv4 = true;
@@ -273,8 +272,8 @@ REDO:
 			fd = err;
 		}
 	}
-	if (!rp && test_net && !matched_ipv4 && !matched_ipv6) {
-		// net?-resolveによるIPアドレス検査で何も引っ掛からなかった時はループをもう一度
+	if (!rp && test_net && !(matched_ipv4 && matched_ipv6)) {
+		// net?-resolveによるIPアドレス検査でv4/v6のどちらかが引っ掛からなかった時はループをもう一度
 		test_net = false;
 		goto REDO;
 	}
@@ -298,7 +297,7 @@ static int parse_header(struct petls *tls) {
 	read_header(src, buf, 2, timeout_greet, true);
 	// [0]: プロトコルバージョン
 	if (buf[0] != 5) {
-		pelog_th(LOG_DEBUG, "not a socks 5 request");
+		pelog_th(LOG_INFO, "not a socks 5 request");
 		fail(-1);
 	}
 
@@ -311,7 +310,7 @@ static int parse_header(struct petls *tls) {
 	}
 	if (i == authnum) {
 		// 「認証無し」が含まれていなかった
-		pelog_th(LOG_DEBUG, "auth methods not acceptable");
+		pelog_th(LOG_INFO, "auth methods not acceptable");
 		fail(0);
 	}
 
@@ -326,12 +325,12 @@ static int parse_header(struct petls *tls) {
 	read_header(src, buf, 4, timeout_read_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
 	if (buf[0] != 5 || buf[2] != 0) {
-		pelog_th(LOG_DEBUG, "broken header");
+		pelog_th(LOG_INFO, "broken header");
 		fail(1);
 	}
 	if (buf[1] != 1) {
 		// connect(tcp)でない
-		pelog_th(LOG_DEBUG, "not a CONNECT request");
+		pelog_th(LOG_INFO, "not a CONNECT request");
 		fail(7);
 	}
 
