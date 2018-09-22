@@ -43,14 +43,14 @@ void clean_sock(void *tls_) {
 	write(count_pipe[1], (int8_t[]){-1}, 1);
 }
 
-static void fail(int type) {
+static void fail(int st) {
 	// type
 	// -1 ブツ切り
 	// 0 認証情報取得中
 	// >0 その値
-	if (type >= 0) {
+	if (st >= 0) {
 		struct petls *tls = pthread_getspecific(sock_cleaner);
-		tls->rtnbuf[1] = type ? type : 0xff;
+		tls->rtnbuf[1] = st ? st : 0xff;
 		pelog_th(LOG_DEBUG, "close with error status %d", tls->rtnbuf[1]);
 		send(tls->src, tls->rtnbuf, tls->rtnlen, MSG_NOSIGNAL);
 	}
@@ -206,16 +206,14 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	bool have_ipv4 = false, have_ipv6 = false;
 	int timeout_ipv4 = 10000, timeout_ipv6 = 2000;
 	struct addrinfo *rp;
-	if (!test_net) {
-		for (rp = res; rp; rp = rp->ai_next) {
-			switch (rp->ai_family) {
-			case AF_INET:
-				have_ipv4 = true;
-				break;
-			case AF_INET6:
-				have_ipv6 = true;
-				break;
-			}
+	for (rp = res; rp; rp = rp->ai_next) {
+		switch (rp->ai_family) {
+		case AF_INET:
+			have_ipv4 = true;
+			break;
+		case AF_INET6:
+			have_ipv6 = true;
+			break;
 		}
 	}
 	if (have_ipv6 && !have_ipv4) {
@@ -287,23 +285,18 @@ static int get_upstream_socket(struct petls *tls, char const *host, char const *
 	return greet_next_proxy(host, port, rule->proxy, connect_next(tls, host, port, rule, true));
 }
 
-static int parse_header(struct petls *tls) {
-	uint8_t buf[768];
+static void parse_header_socks5(struct petls *tls, char destname[static 256], uint16_t port[static 1]) {
+	uint8_t buf[16];
+
+	tls->server_type = server_type_socks5;
+	*tls->rtnbuf = 5;
+	tls->rtnlen = 2;
 	int src = tls->src;
 
-	// ヘッダ返信のタイムアウトは常に500ms
-	setsockopt(src, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){.tv_usec = 500000}, sizeof(struct timeval));
-
-	read_header(src, buf, 2, timeout_greet, true);
-	// [0]: プロトコルバージョン
-	if (buf[0] != 5) {
-		pelog_th(LOG_INFO, "not a socks 5 request");
-		fail(-1);
-	}
-
 	// 認証の種類
-	int authnum = buf[1];
-	read_header(src, buf, authnum, timeout_greet, true);
+	read_header(src, buf, 1, 50, true);
+	int authnum = *buf;
+	read_header(src, buf, authnum, 50, true);
 	int i;
 	for (i = 0; i < authnum; i++) {
 		if (buf[i] == 0) break;
@@ -325,7 +318,7 @@ static int parse_header(struct petls *tls) {
 	read_header(src, buf, 4, timeout_read_short, true);
 	// [0] プロトコルバージョン(5固定) [1] コマンド [2] 0固定 [3] アドレス種類
 	if (buf[0] != 5 || buf[2] != 0) {
-		pelog_th(LOG_INFO, "broken header");
+		pelog_th(LOG_INFO, "broken socks 5 header");
 		fail(1);
 	}
 	if (buf[1] != 1) {
@@ -335,7 +328,6 @@ static int parse_header(struct petls *tls) {
 	}
 
 	// 接続先ホスト
-	char destname[256], destport[6];
 	uint8_t destbin[259];
 	size_t destlen;
 	destbin[0] = buf[3];
@@ -373,10 +365,9 @@ static int parse_header(struct petls *tls) {
 	downcase(destname);
 
 	// ポート
-	uint8_t portbin[2];
-	read_header(src, portbin, 2, timeout_read_short, false);
-	uint16_t port = htons(*(uint16_t*)portbin);
-	memcpy(destbin + destlen, portbin, 2);
+	read_header(src, port, 2, timeout_read_short, false);
+	memcpy(destbin + destlen, port, 2);
+	*port = htons(*port);
 	destlen += 2;
 	if (return_bound_address || *destbin == 1) {
 		// 以降でエラーした時用の返答。リクエストのアドレスを返す。
@@ -385,7 +376,88 @@ static int parse_header(struct petls *tls) {
 		memcpy(&tls->rtnbuf[3], destbin, destlen);
 		tls->rtnlen = destlen + 3;
 	}
-	sprintf(destport, "%d", port);
+}
+
+static void parse_header_socks4(struct petls *tls, char destname[static 256], uint16_t port[static 1]) {
+	tls->server_type = server_type_socks4;
+	*tls->rtnbuf = 0;
+	tls->rtnlen = 8;
+
+	uint8_t buf[8];
+	int src = tls->src;
+	read_header(src, buf, 8, 50, true);
+	// [0]: command, [1-2]: port, [3-6]: dest, [7]: null (user id termination)
+	if (buf[0] != 1) {
+		pelog_th(LOG_INFO, "unsupported method");
+		fail(91);
+	}
+	if (buf[7] != 0) {
+		pelog_th(LOG_INFO, "user auth not supported");
+		fail(91);
+	}
+
+	if (memcmp(&buf[3], "\x0\x0\x0", 3) == 0 && buf[6]) { // dest = 0.0.0.x
+		struct timeval origtmo;
+		getsockopt(src, SOL_SOCKET, SO_RCVTIMEO, &origtmo, (socklen_t[]){sizeof(origtmo)});
+		setsockopt(src, SOL_SOCKET, SO_RCVTIMEO, &(struct timeval){.tv_usec = 50000}, sizeof(origtmo)); // 50ms
+		do {
+			// ホスト名読み取り
+			ssize_t readlen = recv(src, destname, 256, MSG_PEEK);
+			if (readlen == -1) {
+				if (errno == EINTR) continue;
+				pelog_th(LOG_INFO, "header: recv(): %s", strerror(errno));
+				fail(-1);
+			}
+			char *p = memchr(destname, '\0', readlen);
+			if (!p) {
+				// 256文字を受信する前に割り込みで止まり文字列が終端しない可能性もあるが
+				// そのままエラーで死ぬ
+				if (readlen == 256) {
+					pelog_th(LOG_INFO, "requested hostname too long", strerror(errno));
+				}
+				else {
+					pelog_th(LOG_INFO, "invalid socks 4 header");
+				}
+				fail(-1);
+			}
+			read_header(src, destname, p - destname + 1, 50, true);
+		} while (0);
+		setsockopt(src, SOL_SOCKET, SO_RCVTIMEO, &origtmo, sizeof(origtmo));
+		if (!*destname || !simple_host_check(destname)) {
+			pelog_th(LOG_INFO, "invalid hostname");
+			fail(91);
+		}
+	}
+	else {
+		inet_ntop(AF_INET, &buf[3], destname, 256);
+	}
+	tls->rtnbuf[1] = 90;
+	*port = htons(*(uint16_t*)&buf[1]);
+}
+
+static int parse_header(struct petls *tls) {
+	uint8_t buf[768];
+	char destname[256], destport[6];
+	uint16_t port;
+	int src = tls->src;
+
+	// ヘッダ返信のタイムアウトは常に500ms
+	setsockopt(src, SOL_SOCKET, SO_SNDTIMEO, &(struct timeval){.tv_usec = 500000}, sizeof(struct timeval));
+
+	read_header(src, buf, 1, timeout_greet, true);
+	// [0]: プロトコルバージョン
+	if (*buf == 5) {
+		parse_header_socks5(tls, destname, &port);
+	}
+	else if (*buf == 4) {
+		parse_header_socks4(tls, destname, &port);
+	}
+	else {
+		pelog_th(LOG_INFO, "not a socks request");
+		fail(-1);
+	}
+
+	sprintf(destport, "%u", port);
 	sprintf(tls->reqhost, "%s#%s", destname, destport);
 	pelog_th(LOG_DEBUG, "header parsed");
 
@@ -398,8 +470,8 @@ static int parse_header(struct petls *tls) {
 	uint8_t srcaddrbin[16];
 	uint16_t srcport;
 	int type = retrieve_sock_info(false, upstream, srcname, srcaddrbin, &srcport);
-	
-	if (return_bound_address) {
+
+	if (tls->server_type == server_type_socks5 && return_bound_address) {
 		size_t addrlen;
 		switch(type) {
 		case AF_INET: type = 1; addrlen = 4; break;
@@ -594,8 +666,6 @@ int do_accept(struct pollfd *poll_list, size_t bind_num) {
 				struct petls *tls = calloc(1, sizeof(*tls));
 				tls->src = confd;
 				tls->dest = -1;
-				*tls->rtnbuf = 5;
-				tls->rtnlen = 2;
 				sprintf(tls->id, "%08"PRIX32, thread_id++);
 				pthread_create((pthread_t[]){0}, &pattr, do_socks, tls);
 				write(count_pipe[1], (uint8_t[]){1}, 1);

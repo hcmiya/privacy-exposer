@@ -176,7 +176,7 @@ static size_t parse_proxy_hostname(char **fields, size_t fieldnum, char *name, i
 	if (fieldnum < 2) {
 		error("too few arguments for %s", name);
 	}
-	if (!simple_host_check(*fields) || **fields == '.' || end_with(*fields, ".")) {
+	if (!simple_host_check(*fields) || **fields == '.') {
 		error("invalid host for %s: %s", name, *fields);
 	}
 	size_t len = 0;

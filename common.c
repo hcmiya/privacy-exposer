@@ -83,7 +83,12 @@ bool simple_host_check(char const *host) {
 			"0123456789abcdefABCDEF.:" :
 			"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-._"
 		)) return false;
-	if (*host == '-' || strstr(host, "..") || strstr(host, ".-") || strstr(host, "-.") || end_with(host, "-")) return false;
+	if (*host == '-'
+		|| strstr(host, "..")
+		|| strstr(host, ".-")
+		|| strstr(host, "-.")
+		|| end_with(host, "-")
+		|| end_with(host, ".")) return false;
 	return true;
 }
 

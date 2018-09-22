@@ -11,6 +11,11 @@ struct petls {
 	uint8_t rtnbuf[262]; // socks5返答最長
 	size_t rtnlen;
 	int src, dest;
+	enum {
+		server_type_undecided,
+		server_type_socks5,
+		server_type_socks4,
+	} server_type;
 	struct timespec btime;
 };
 
