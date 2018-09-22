@@ -206,7 +206,8 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	bool have_ipv4 = false, have_ipv6 = false;
 	int timeout_ipv4 = 10000, timeout_ipv6 = 2000;
 	struct addrinfo *rp;
-	for (rp = res; rp; rp = rp->ai_next) {
+	size_t failed_list_num = 0;
+	for (rp = res; rp; rp = rp->ai_next, failed_list_num++) {
 		switch (rp->ai_family) {
 		case AF_INET:
 			have_ipv4 = true;
@@ -221,9 +222,11 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	}
 
 	int fd;
-	bool matched_ipv4 = false, matched_ipv6 = false;
+	bool failed[failed_list_num];
+	memset(failed, 0, sizeof(*failed) * failed_list_num);
+	size_t di;
 REDO:
-	for (rp = res; rp; rp = rp->ai_next) {
+	for (rp = res, di = 0; rp; rp = rp->ai_next, di++) {
 		char straddr[64];
 		getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
 
@@ -231,26 +234,15 @@ REDO:
 			pelog_th(LOG_DEBUG, "upstream: test net: %s", straddr);
 			struct rule *rule_resolve = match_net_resolve(rule->idx, rp->ai_addr);
 			if (rule_resolve) {
+				struct proxy *proxy = rule_resolve->proxy;
 				pelog_th(LOG_DEBUG, "upstream: %s: applying new rule set #%zd", straddr, rule_resolve->idx);
-				switch (rp->ai_family) {
-				case AF_INET:
-					matched_ipv4 = true;
-					break;
-				case AF_INET6:
-					matched_ipv6 = true;
-					break;
-				}
 				fd = connect_next(tls, straddr, port, rule_resolve, false);
 				if (fd >= 0) break;
+				failed[di] = true;
 			}
 		}
 		else {
-			if (rp->ai_family == AF_INET && matched_ipv4) {
-				continue;
-			}
-			if (rp->ai_family == AF_INET6 && matched_ipv6) {
-				continue;
-			}
+			if (failed[di]) continue;
 			pelog_th(LOG_DEBUG, "upstream: creating connection: %s", straddr);
 
 			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
@@ -270,8 +262,8 @@ REDO:
 			fd = err;
 		}
 	}
-	if (!rp && test_net && !(matched_ipv4 && matched_ipv6)) {
-		// net?-resolveによるIPアドレス検査でv4/v6のどちらかが引っ掛からなかった時はループをもう一度
+	if (!rp && test_net) {
+		// net?-resolveによるIPアドレス検査で落とされなかったものに対してループをもう一度
 		test_net = false;
 		goto REDO;
 	}
