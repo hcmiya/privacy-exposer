@@ -46,11 +46,17 @@ void clean_sock(void *tls_) {
 static void fail(int st) {
 	// type
 	// -1 ブツ切り
-	// 0 認証情報取得中
-	// >0 その値
+	// >=0 その値
 	if (st >= 0) {
 		struct petls *tls = pthread_getspecific(sock_cleaner);
-		tls->rtnbuf[1] = st ? st : 0xff;
+		switch (tls->server_type) {
+		case server_type_socks5:
+			tls->rtnbuf[1] = st;
+			break;
+		case server_type_socks4:
+			tls->rtnbuf[1] = st >= 91 && st <= 93 ? st : 91;
+			break;
+		}
 		pelog_th(LOG_DEBUG, "close with error status %d", tls->rtnbuf[1]);
 		send(tls->src, tls->rtnbuf, tls->rtnlen, MSG_NOSIGNAL);
 	}
@@ -297,7 +303,7 @@ static void parse_header_socks5(struct petls *tls, char destname[static 256], ui
 	if (i == authnum) {
 		// 「認証無し」が含まれていなかった
 		pelog_th(LOG_INFO, "auth methods not acceptable");
-		fail(0);
+		fail(0xff);
 	}
 
 	// 「認証無し」の接続を受け付けた
