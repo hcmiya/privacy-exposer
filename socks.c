@@ -225,48 +225,49 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 	bool failed[failed_list_num];
 	memset(failed, 0, sizeof(*failed) * failed_list_num);
 	size_t di;
-REDO:
-	for (rp = res, di = 0; rp; rp = rp->ai_next, di++) {
-		char straddr[64];
-		getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
+	if (test_net) {
+		for (rp = res, di = 0; rp; rp = rp->ai_next, di++) {
+			// net?-resolve適用
+			char straddr[64];
+			getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
 
-		if (test_net) {
 			pelog_th(LOG_DEBUG, "upstream: test net: %s", straddr);
 			struct rule *rule_resolve = match_net_resolve(rule->idx, rp->ai_addr);
 			if (rule_resolve) {
-				struct proxy *proxy = rule_resolve->proxy;
 				pelog_th(LOG_DEBUG, "upstream: %s: applying new rule set #%zd", straddr, rule_resolve->idx);
 				fd = connect_next(tls, straddr, port, rule_resolve, false);
-				if (fd >= 0) break;
+				if (fd >= 0) goto DONE;
 				failed[di] = true;
 			}
 		}
-		else {
-			if (failed[di]) continue;
-			pelog_th(LOG_DEBUG, "upstream: creating connection: %s", straddr);
+	}
 
-			tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-			int err;
-			if (fd != -1) {
-				err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen, rp->ai_family == AF_INET ? timeout_ipv4 : timeout_ipv6);
-				if (!err) {
-					pelog_th(LOG_DEBUG, "upstream: got connection: %s", straddr);
-					break;
-				}
+	for (rp = res, di = 0; rp; rp = rp->ai_next, di++) {
+		if (failed[di]) continue;
+
+		// net?-resolve未適用のものに対して接続処理を行う
+		char straddr[64];
+		getnameinfo(rp->ai_addr, rp->ai_addrlen, straddr, 64, NULL, 0, NI_NUMERICHOST);
+
+		pelog_th(LOG_DEBUG, "upstream: creating connection: %s", straddr);
+
+		tls->dest = fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+		int err;
+		if (fd != -1) {
+			err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen, rp->ai_family == AF_INET ? timeout_ipv4 : timeout_ipv6);
+			if (!err) {
+				pelog_th(LOG_DEBUG, "upstream: got connection: %s", straddr);
+				break;
 			}
-			else {
-				pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
-			}
-			close(fd);
-			tls->dest = -1;
-			fd = err;
 		}
+		else {
+			pelog_th(LOG_INFO, "upstream: socket(): %s", strerror(errno));
+		}
+		close(fd);
+		tls->dest = -1;
+		fd = err;
 	}
-	if (!rp && test_net) {
-		// net?-resolveによるIPアドレス検査で落とされなかったものに対してループをもう一度
-		test_net = false;
-		goto REDO;
-	}
+DONE:
 	freeaddrinfo(res);
 	return fd;
 }
