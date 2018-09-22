@@ -65,10 +65,7 @@ static void pelog_not_syslog_th(int priority, char const *fmt, ...) {
 static void vpelog_not_syslog(int priority, char const *fmt, va_list ap) {
 	if (priority > level) return;
 	head(priority);
-	va_list copyap;
-	va_copy(copyap, ap);
-	vprintf(fmt, copyap);
-	va_end(copyap);
+	vprintf(fmt, ap);
 	term();
 }
 
@@ -88,7 +85,7 @@ void pelog_open(bool use_syslog, int loglevel) {
 	if (use_syslog) {
 		openlog("privacy-exposer", LOG_PID, LOG_USER);
 		int const tab[] = {
-			LOG_EMERG,  LOG_ALERT,  LOG_CRIT,  LOG_ERR,  LOG_WARNING,  LOG_NOTICE,  LOG_INFO, LOG_DEBUG
+			LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
 		};
 		int logmask = 0;
 		for (int i = 0; i <= loglevel; i++) {
