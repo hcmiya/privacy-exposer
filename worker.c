@@ -24,7 +24,7 @@
 #include "global.h"
 
 static pid_t current_worker;
-static pid_t *worker_list;
+static pid_t *worker_list; // SIGHUPで接続が維持されているのを溜めておくやつ
 static size_t worker_num = 0; // 基本的に1つ
 static int pid_pipe[2];
 static volatile bool need_worker;
