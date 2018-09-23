@@ -123,6 +123,16 @@ static struct rule rule_default[] = {
 		ALL_PORT_DENY_NO_ROUTE,
 	},
 	{
+		// 203.0.113.0/24
+		.type = rule_net4_resolve,
+		.u.net = {
+			.af = AF_INET,
+			.cidr = 24,
+			.addr = {203, 0, 113, 0},
+		},
+		ALL_PORT_DENY_NO_ROUTE,
+	},
+	{
 		// 240.0.0.0/4
 		.type = rule_net4_resolve,
 		.u.net = {
