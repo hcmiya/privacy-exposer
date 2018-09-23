@@ -71,12 +71,14 @@ static struct rule rule_default[] = {
 		ALL_PORT_DENY_NO_ROUTE,
 	},
 	{
-		// ::/96
+		// ::/96 除く ::1
 		.type = rule_net6_resolve,
 		.u.net = {
 			.af = AF_INET6,
 			.cidr = 96,
 			.addr = "",
+			.exceptcidr = 128,
+			.exceptaddr = {[15] = 1},
 		},
 		ALL_PORT_DENY_NO_ROUTE,
 	},
@@ -363,6 +365,16 @@ static uint8_t parse_cidr(char const *str, int max) {
 	return cidr;
 }
 
+static bool test_net(int addrtype, void *target_, void *test_, uint8_t cidr) {
+	uint8_t *target = target_, *test = test_;
+	while (cidr >= 8) {
+		if (*target++ != *test++) return false;
+		cidr -= 8;
+	}
+	int left = 8 - cidr;
+	return !cidr || (*target >> left) == (*test >> left);
+}
+
 static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, int type) {
 	if (fieldnum < 1) {
 		error("no arguments for %s", name);
@@ -421,10 +433,40 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 	uint16_t *port_list;
 	size_t port_num = parse_port(port, &port_list);
 
+	// 除外ネットワーク
+	uint8_t exceptaddr[16];
+	uint8_t exceptcidr = 0;
+	if (*fields && strcmp(*fields, "except") == 0) {
+		fields++;
+		fieldnum--;
+		if (!fieldnum) {
+			error("no argument for except address");
+		}
+		char *strexcept = *fields++;
+		fieldnum--;
+		char *strcidr = strchr(strexcept, '/');
+		if (strcidr) {
+			*strcidr++ = '\0';
+		}
+		if (!inet_pton(addrtype, strexcept, exceptaddr)) {
+			error("invalid %s address: %s", protoname, strexcept);
+		}
+		if (!test_net(addrtype, addr, exceptaddr, cidr)) {
+			error("except network is not part of the base network");
+		}
+		exceptcidr = strcidr ? parse_cidr(strcidr, cidrmax) : cidrmax;
+		if (exceptcidr <= cidr) {
+			// ※ネットワークが小さい ⇒ CIDRが大きい
+			error("except network (/%d) must be smaller than the base network (/%d)", exceptcidr, cidr);
+		}
+	}
+
 	struct rule *rule = new_rule_ent(type);
 	rule->u.net.af = addrtype;
 	memcpy(rule->u.net.addr, addr, addrlen);
+	memcpy(rule->u.net.exceptaddr, exceptaddr, addrlen);
 	rule->u.net.cidr = cidr;
+	rule->u.net.exceptcidr = exceptcidr;
 	rule->ports = port_list;
 	rule->port_num = port_num;
 
@@ -658,14 +700,10 @@ static bool match_port(uint16_t port, uint16_t *ports, size_t num) {
 	return false;
 }
 
-static bool match_net(int addrtype, void *target_, void *test_, uint8_t cidr) {
-	uint8_t *target = target_, *test = test_;
-	while (cidr >= 8) {
-		if (*target++ != *test++) return false;
-		cidr -= 8;
-	}
-	int left = 8 - cidr;
-	return !cidr || (*target >> left) == (*test >> left);
+static bool match_net(struct rule *rule, int addrtype, uint8_t *addr, uint16_t port) {
+	return test_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr)
+		&& match_port(port, rule->ports, rule->port_num)
+		&& (!rule->u.net.exceptcidr || !test_net(addrtype, addr, rule->u.net.exceptaddr, rule->u.net.exceptcidr));
 }
 
 struct rule *match_rule(char const *host, uint16_t port) {
@@ -727,7 +765,7 @@ struct rule *match_rule(char const *host, uint16_t port) {
 				if (!inet_pton(addrtype, host, addr)) {
 					break;
 				}
-				if (match_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr) && match_port(port, rule->ports, rule->port_num)) return rule;
+				if (match_net(rule, addrtype, addr, port)) return rule;
 			}
 			break;
 		case rule_fnmatch:
@@ -759,8 +797,7 @@ struct rule *match_net_resolve(ssize_t maxidx, struct sockaddr *target) {
 	while (*r && (*r)->idx < maxidx) {
 		struct rule *dr = *r;
 		if (target->sa_family == dr->u.net.af
-			&& match_net(target->sa_family, addr, dr->u.net.addr, dr->u.net.cidr)
-			&& match_port(port, dr->ports, dr->port_num)) return dr;
+			&& match_net(dr, target->sa_family, addr, port)) return dr;
 		r++;
 	}
 	return NULL;

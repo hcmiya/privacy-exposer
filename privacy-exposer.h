@@ -36,9 +36,10 @@ struct rule {
 			char *name;
 		} host;
 		struct {
-			sa_family_t af;
-			uint8_t cidr;
 			uint8_t addr[16];
+			uint8_t exceptaddr[16];
+			sa_family_t af;
+			uint8_t cidr, exceptcidr;
 		} net;
 		char *pattern;
 	} u;
