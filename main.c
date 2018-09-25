@@ -17,12 +17,46 @@
 #include <inttypes.h>
 #include <sys/wait.h>
 #include <poll.h>
+#include <time.h>
 
 #define GLOBAL_MAIN
 #include "privacy-exposer.h"
 #include "global.h"
+#include "version.h"
 
 static char const *pidfile;
+
+static int usage(char *prog) {
+	char revision[64];
+	strftime(revision, 64, "%x", &(struct tm){
+		.tm_year = PRIVACY_EXPOSER_REVISION_YEAR,
+		.tm_mon = PRIVACY_EXPOSER_REVISION_MONTH,
+		.tm_mday = PRIVACY_EXPOSER_REVISION_DAY,
+	});
+	printf("Version: %s (rev. %s)\n\n", PRIVACY_EXPOSER_VERSION, revision);
+
+	printf(
+"Synopsys:\n"
+"    %1$s [-cf] [-l loglevel] [-p pidfile] [-r rules] [bind-addr bind-port]...\n"
+"    %1$s -h\n"
+"\n"
+"Options:\n"
+"    -c    Check syntax of rule set and exit\n"
+"    -f    Return fixed IPv4 bound address at the response field\n"
+"          (workaround for Privoxy)\n"
+"    -h    Print the usage and exit\n"
+"    -l loglevel\n"
+"          Set loglevel between 0 to 7\n"
+"    -p pidfile\n"
+"          Put PID to pidfile and daemonize. Logs are sent to syslog(3)\n"
+"          instead of stdout\n"
+"    -r rules\n"
+"          Read rule set\n"
+"\n"
+"For more infomation, visit the wiki <https://github.com/hcmiya/privacy-exposer/wiki>\n",
+		prog);
+	exit(0);
+}
 
 static int init(int argc, char **argv) {
 	int c;
@@ -30,7 +64,7 @@ static int init(int argc, char **argv) {
 	char *endp;
 	bool check_rule_only = false;
 
-	while ((c = getopt(argc, argv, "cfl:p:r:")) != -1) {
+	while ((c = getopt(argc, argv, "cfhl:p:r:")) != -1) {
 		switch (c) {
 		case 'p':
 			pidfile = optarg;
@@ -51,6 +85,9 @@ static int init(int argc, char **argv) {
 			break;
 		case 'c':
 			check_rule_only = true;
+			break;
+		case 'h':
+			usage(*argv);
 			break;
 		case '?':
 			exit(1);
@@ -201,6 +238,10 @@ int worker_loop(struct pollfd *poll_list, int bind_num);
 
 int main(int argc, char **argv) {
 	int argstart = init(argc, argv);
+	if (argc == 1) {
+		pelog(LOG_NOTICE, "You've execed the program without any arguments so now performing a dumb SOCKS proxy.");
+		pelog(LOG_NOTICE, "To get a usage, use -h.");
+	}
 	argc -= argstart;
 	argv += argstart;
 
