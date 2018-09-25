@@ -22,11 +22,13 @@
 #include "privacy-exposer.h"
 #include "global.h"
 
+#define ADDR_MAX 64
+
 int retrieve_sock_info(
 		bool peer,
 		int fd,
-		char addrname[static 46], // ipv6アドレス最長
-		uint8_t *addrbin, // 16バイト以上あることを保証
+		char addrname[static ADDR_MAX], // ipv6アドレス格納。スコープIDが含まれる可能性があるので長めに
+		uint8_t *addrbin, // NULLでなければ16バイト以上あることを保証すること
 		uint16_t *port) {
 	uint8_t buf[128], portbin[2], addrbin_dummy[16];
 	char txtport[6];
@@ -39,14 +41,14 @@ int retrieve_sock_info(
 	int type = addr->sa_family;
 	if (type == AF_UNIX) {
 		struct sockaddr_un *un = (void*)addr;
-		strncpy(addrname, un->sun_path, 46);
-		if (addrname[45] != '\0') {
-			strcpy(&addrname[40], "//...");
+		strncpy(addrname, un->sun_path, ADDR_MAX);
+		if (addrname[ADDR_MAX - 1] != '\0') {
+			strcpy(&addrname[ADDR_MAX - 6], "//...");
 		}
 		*port = 0;
 	}
 	else {
-		getnameinfo(addr, addrlen, addrname, 46, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
+		getnameinfo(addr, addrlen, addrname, ADDR_MAX, txtport, 6, NI_NUMERICHOST | NI_NUMERICSERV);
 		*port = atoi(txtport);
 		inet_pton(type, addrname, addrbin);
 	}
