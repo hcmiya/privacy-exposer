@@ -403,7 +403,7 @@ static uint8_t parse_cidr(char const *str, int max) {
 	return cidr;
 }
 
-static bool test_net(int addrtype, void *target_, void *test_, uint8_t cidr) {
+static bool test_net(void *target_, void *test_, uint8_t cidr) {
 	uint8_t *target = target_, *test = test_;
 	while (cidr >= 8) {
 		if (*target++ != *test++) return false;
@@ -489,7 +489,7 @@ static size_t parse_rule_net(char **fields, size_t fieldnum, char const *name, i
 		if (!inet_pton(addrtype, strexcept, exceptaddr)) {
 			error("invalid %s address: %s", protoname, strexcept);
 		}
-		if (!test_net(addrtype, addr, exceptaddr, cidr)) {
+		if (!test_net(addr, exceptaddr, cidr)) {
 			error("except network is not part of the base network");
 		}
 		exceptcidr = strcidr ? parse_cidr(strcidr, cidrmax) : cidrmax;
@@ -739,9 +739,9 @@ static bool match_port(uint16_t port, uint16_t *ports, size_t num) {
 }
 
 static bool match_net(struct rule *rule, int addrtype, uint8_t *addr, uint16_t port) {
-	return test_net(addrtype, addr, rule->u.net.addr, rule->u.net.cidr)
+	return test_net(addr, rule->u.net.addr, rule->u.net.cidr)
 		&& match_port(port, rule->ports, rule->port_num)
-		&& (!rule->u.net.exceptcidr || !test_net(addrtype, addr, rule->u.net.exceptaddr, rule->u.net.exceptcidr));
+		&& (!rule->u.net.exceptcidr || !test_net(addr, rule->u.net.exceptaddr, rule->u.net.exceptcidr));
 }
 
 struct rule *match_rule(char const *host, uint16_t port) {
@@ -800,8 +800,31 @@ struct rule *match_rule(char const *host, uint16_t port) {
 					addrlen = 16;
 					break;
 				}
-				if (!inet_pton(addrtype, host, addr)) {
-					break;
+				int parsed_as_ipv6 = inet_pton(AF_INET6, host, addr);
+				if (parsed_as_ipv6) {
+					if (addrtype == AF_INET) {
+						// 入力がIPv4射影アドレスかNAT64 prefixの場合はIPv4として検査する
+						bool v4mapped = true;
+						do {
+							// ::ffff:0:0/96
+							// if (test_net("\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\xff\xff\x0\x0\x0\x0", addr, 96)) break;
+							if (memcmp("\x0\x0\x0\x0\x0\x0\x0\x0\x0\x0\xff\xff", addr, 12) == 0) break;
+							// 64:ff9b::/96 (well known)
+							if (memcmp("\x0\x64\xff\x9b\x0\x0\x0\x0\x0\x0\x0\x0", addr, 12) == 0) break;
+							v4mapped = false;
+						} while (false);
+						if (v4mapped) {
+							addrtype = AF_INET;
+							memcpy(addr, &addr[12], 4);
+						}
+						else break;
+					}
+				}
+				else {
+					if (addrtype == AF_INET) {
+						if (!inet_pton(AF_INET, host, addr)) break;
+					}
+					else break;
 				}
 				if (match_net(rule, addrtype, addr, port)) return rule;
 			}
