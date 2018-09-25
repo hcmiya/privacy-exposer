@@ -1,6 +1,6 @@
 # privacy-exposer
 
-privacy-exposerは宛先に応じて上流のSOCKS5やHTTPプロクシへ中継する機能を持つSOCKS5プロクシです。CONNECTコマンドのみに対応します。
+privacy-exposerは宛先に応じて別のプロクシへ中継する機能を持つSOCKS5/4Aプロクシです。CONNECTコマンドのみに対応します。
 
 ## 特徴
 

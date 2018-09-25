@@ -188,30 +188,57 @@ static size_t parse_proxy_hostname(char **fields, size_t fieldnum, char *name, i
 	if (fieldnum < 2) {
 		error("too few arguments for %s", name);
 	}
-	if (!simple_host_check(*fields) || **fields == '.') {
-		error("invalid host for %s: %s", name, *fields);
+	size_t fieldnum_sav = fieldnum;
+
+	char *host = *fields++;
+	char *port = *fields++;
+	fieldnum -= 2;
+	downcase(host);
+
+	bool hostpass = false;
+	do {
+		if (strncmp("fe80:", host, 5) == 0) {
+			// IPv6リンクローカルアドレス。後ろに処理系定義のインターフェイス名識別子を付けないと使えず、
+			// その構文の検証をsimple_host_check()で行えないためgetaddrinfo()を使う。
+			struct addrinfo *res;
+			int gairet = getaddrinfo(host, port, &(struct addrinfo) {
+				.ai_family = AF_INET6,
+				.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV,
+			}, &res);
+			if (gairet) break;
+			struct sockaddr_in6 *i6 = (struct sockaddr_in6 *)res->ai_addr;
+			hostpass = !!i6->sin6_scope_id;
+			freeaddrinfo(res);
+			break;
+		}
+		if (simple_host_check(host)) {
+			hostpass = *host != '.';
+			break;
+		}
+	} while (false);
+	if (!hostpass) {
+		error("invalid host for %s: %s", name, host);
 	}
+
 	size_t len = 0;
-	char *pp = fields[1];
+	char *pp = port;
+	int32_t portint = 0;
 	while (*pp && len < 5) {
 		if (!isdigit(*pp)) {
 			break;
 		}
+		portint = portint * 10 + *pp - '0';
 		pp++;
 		len++;
 	}
-	if (*pp) {
-		error("invalid port for %s: ", name, fields[1]);
+	if (*pp || portint > 65535) {
+		error("invalid port for %s: ", name, port);
 	}
 
-	long val = strtoul(fields[1], NULL, 10);
-	if (val > 65535) {
-		error("invalid port for %s: ", name, fields[1]);
-	}
 	struct proxy *proxy = new_proxy_ent(type);
-	proxy->u.host_port.name = strdup(*fields);
-	strcpy(proxy->u.host_port.port, fields[1]);
-	return 2;
+	proxy->u.host_port.name = strdup(host);
+	strcpy(proxy->u.host_port.port, port);
+	return fieldnum_sav - fieldnum;
 }
 
 static size_t parse_proxy_abs_path(char **fields, size_t fieldnum, char *name, int type) {
@@ -326,6 +353,7 @@ static size_t parse_rule_host(char **fields, size_t fieldnum, char const *name, 
 	}
 	size_t rtn = 0;
 	char *host = *fields;
+
 	if (*host == '#') {
 		host = "";
 	}
