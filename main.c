@@ -193,6 +193,7 @@ static void daemonize() {
 		exit(1);
 	case 0:
 		close(pp[0]);
+		fclose(pidfp);
 		break;
 	default:
 		close(pp[1]);
@@ -221,6 +222,7 @@ static void daemonize() {
 	case 0:
 		break;
 	default:
+		close(pp[1]);
 		_exit(0);
 	}
 
