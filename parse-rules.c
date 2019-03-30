@@ -37,7 +37,7 @@ static struct proxy const deny_no_route = {
 #define ALL_PORT_DENY_NO_ROUTE \
 	.ports = (uint16_t[]){0, 65535}, \
 	.port_num = 2, \
-	.proxy = (struct proxy*)&deny_no_route \
+	.proxy = (struct proxy*)&deny_no_route
 
 static struct rule rule_default[] = {
 	{

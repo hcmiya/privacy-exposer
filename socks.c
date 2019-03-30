@@ -32,6 +32,7 @@ static volatile bool quitting;
 
 void clean_sock(void *tls_) {
 	struct petls *tls = tls_;
+	pelog(LOG_DEBUG, "%s %s: %dms: closing fd: src = %d, dest = %d", tls->id, tls->reqhost, lapse_ms(&tls->btime), tls->src, tls->dest);
 	shutdown(tls->src, SHUT_RDWR);
 	close(tls->src);
 	if (tls->dest != -1) {
@@ -186,7 +187,7 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 					close(sockfd);
 					return -1;
 				}
-				return sockfd;
+				return tls->dest = sockfd;
 			}
 		default:
 			host = proxy->u.host_port.name;
@@ -262,7 +263,7 @@ static int connect_next(struct petls *tls, char const *host, char const *port, s
 		if (fd != -1) {
 			err = connect_timeout(fd, rp->ai_addr, rp->ai_addrlen, rp->ai_family == AF_INET ? timeout_ipv4 : timeout_ipv6);
 			if (!err) {
-				pelog_th(LOG_DEBUG, "upstream: got connection: %s", straddr);
+				pelog_th(LOG_DEBUG, "upstream: got connection: %s, fd = %d", straddr, fd);
 				break;
 			}
 		}
@@ -573,7 +574,7 @@ void *do_socks(void *tls_) {
 	uint16_t port_local, port_remote;
 	retrieve_sock_info(false, src, accept_local, NULL, &port_local);
 	retrieve_sock_info(true, src, accept_remote, NULL, &port_remote);
-	pelog(LOG_DEBUG, "%s: accept: %s#%d <- %s#%d", tls->id, accept_local, port_local, accept_remote, port_remote);
+	pelog(LOG_DEBUG, "%s: accept: %s#%d <- %s#%d, fd = %d", tls->id, accept_local, port_local, accept_remote, port_remote, src);
 	sprintf(tls->reqhost, "(req from %s)", accept_remote);
 
 	clock_gettime(CLOCK_REALTIME, &tls->btime);
